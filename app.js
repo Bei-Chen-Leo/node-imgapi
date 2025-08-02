@@ -4,7 +4,7 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 
-const configPath = path.join(__dirname, 'config.json');
+const configPath = path.join(__dirname,'config', 'config.json');
 let config = {
   web: {
     httpPort: 3000,
