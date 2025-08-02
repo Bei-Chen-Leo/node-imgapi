@@ -8,23 +8,22 @@ module.exports = (dirConfig, cacheConfig) => {
   const IMG_DIR = dirConfig.imgDir;
   const USE_REDIS = cacheConfig.redisEnable;
 
-  // 本地 Map 缓存
   const fileCache = new Map();
   const MAX_CACHE = cacheConfig.mapMaxSize || 100;
 
-  // Redis 客户端初始化
   let redisClient = null;
   if (USE_REDIS) {
     let retryCount = 0;
     const maxRetries = 5;
+
     redisClient = createClient({
       socket: {
         host: cacheConfig.redisHost,
         port: cacheConfig.redisPort,
         connectTimeout: 5000,
-        reconnectStrategy: retries => {
+        reconnectStrategy: (retries) => {
           if (++retryCount > maxRetries) {
-            console.error(`[Redis] 超过最大重连次数(${maxRetries})，停止重试`);
+            console.error(`[Redis] 超过最大重连次数(${maxRetries})，放弃重试`);
             return new Error('Redis 重连失败');
           }
           const delay = Math.min(1000 * retries, 5000);
@@ -34,19 +33,32 @@ module.exports = (dirConfig, cacheConfig) => {
       },
       password: cacheConfig.redisPassword || undefined
     });
-    redisClient.on('connect', () => console.log('[Redis] 连接成功'));
-    redisClient.on('reconnecting', () => console.log('[Redis] 尝试重连...'));
-    redisClient.on('end', () => console.warn('[Redis] 连接已断开'));
-    redisClient.on('error', err => console.error('[Redis Error]', err.message));
-    redisClient.connect().catch(e => console.error('[Redis Connect Failed]', e.message));
+
+    redisClient.on('connect', () => {
+      console.log('[Redis] 连接成功');
+    });
+
+    redisClient.on('reconnecting', () => {
+      console.log('[Redis] 尝试重连...');
+    });
+
+    redisClient.on('end', () => {
+      console.warn('[Redis] 连接已断开');
+    });
+
+    redisClient.on('error', err => {
+      console.error('[Redis Error]', err.message);
+    });
+
+    redisClient.connect().catch(e => {
+      console.error('[Redis Connect Failed]', e.message);
+    });
   }
 
-  // 工具：判断图片文件
   function isImageFile(filename) {
     return /\.(jpg|jpeg|png|gif|webp)$/i.test(filename);
   }
 
-  // 工具：格式化 mtime
   function formatTime(date) {
     return new Intl.DateTimeFormat('zh-CN', {
       timeZone: 'Asia/Shanghai',
@@ -56,19 +68,20 @@ module.exports = (dirConfig, cacheConfig) => {
     }).format(date).replace(/\//g, '-').replace(/,/g, '');
   }
 
-  // 递归列出所有图片
   function getAllImages(dir) {
     let images = [];
     const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isFile() && isImageFile(e.name)) images.push(full);
-      else if (e.isDirectory()) images = images.concat(getAllImages(full));
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isFile() && isImageFile(entry.name)) {
+        images.push(fullPath);
+      } else if (entry.isDirectory()) {
+        images = images.concat(getAllImages(fullPath));
+      }
     }
     return images;
   }
 
-  // 列出目录下（非递归）图片
   function getImagesInDir(dir) {
     if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return [];
     return fs.readdirSync(dir)
@@ -76,30 +89,28 @@ module.exports = (dirConfig, cacheConfig) => {
       .map(f => path.join(dir, f));
   }
 
-  // 核心：获取文件信息并缓存
   async function getFileInfo(filePath) {
-    const cacheKey = `img:${filePath}`;
-    // 1. Redis 缓存
+    const cacheKey = 'img:' + filePath;
+
     if (USE_REDIS) {
       try {
-        const raw = await redisClient.get(cacheKey);
-        if (raw) {
+        const cached = await redisClient.get(cacheKey);
+        if (cached) {
           console.log('[Redis Cache Hit]', filePath);
-          return JSON.parse(raw);
+          return JSON.parse(cached);
         }
       } catch (e) {
         console.error('[Redis Error]', e.message);
       }
-    }
-    // 2. 本地 Map 缓存
-    if (!USE_REDIS && fileCache.has(filePath)) {
+    } else if (fileCache.has(filePath)) {
       const info = fileCache.get(filePath);
       fileCache.delete(filePath);
-      fileCache.set(filePath, info); // 更新 LRU
+      fileCache.set(filePath, info);
       console.log('[Map Cache Hit]', filePath);
       return info;
     }
-    // 3. 缓存未命中
+
+    // 未命中缓存
     console.log('[Cache Miss]', filePath);
     const stats = fs.statSync(filePath);
     const info = {
@@ -108,6 +119,7 @@ module.exports = (dirConfig, cacheConfig) => {
       mtime: formatTime(stats.mtime),
       path: '/api/' + path.relative(IMG_DIR, filePath).replace(/\\/g, '/')
     };
+
     if (USE_REDIS) {
       try {
         await redisClient.set(cacheKey, JSON.stringify(info));
@@ -120,39 +132,36 @@ module.exports = (dirConfig, cacheConfig) => {
         fileCache.delete(fileCache.keys().next().value);
       }
     }
+
     return info;
   }
 
-  // 单路由处理所有请求
-  router.get('/*', async (req, res) => {
+  router.get('/:dir?/:file?', async (req, res) => {
     try {
+      const dir = req.params.dir;
+      const file = req.params.file;
       const wantJson = req.query.json === '1';
-      // req.params[0] 去掉开头的 '/'
-      const relPath = (req.params[0] || '').replace(/^\/+/, '');
-      // 无 path 则随机全局
-      if (!relPath) {
-        const all = getAllImages(IMG_DIR);
-        if (all.length === 0) return res.status(404).send('该目录无图片');
-        const pick = all[Math.floor(Math.random() * all.length)];
-        const info = await getFileInfo(pick);
-        return wantJson ? res.json(info) : res.sendFile(pick);
+
+      if (dir && file) {
+        const filePath = path.join(IMG_DIR, dir, file);
+        if (!fs.existsSync(filePath)) return res.status(404).send('图片不存在');
+
+        const info = await getFileInfo(filePath);
+        if (wantJson) return res.json(info);
+        return res.sendFile(filePath);
       }
-      // 存在路径时
-      const absPath = path.join(IMG_DIR, relPath);
-      if (!fs.existsSync(absPath)) return res.status(404).send('图片不存在／非法路径');
-      const stat = fs.statSync(absPath);
-      if (stat.isDirectory()) {
-        // 目录 → 随机该目录下图片
-        const arr = getImagesInDir(absPath);
-        if (arr.length === 0) return res.status(404).send('该目录无图片');
-        const pick = arr[Math.floor(Math.random() * arr.length)];
-        const info = await getFileInfo(pick);
-        return wantJson ? res.json(info) : res.sendFile(pick);
-      } else {
-        // 文件 → 返回文件或 JSON
-        const info = await getFileInfo(absPath);
-        return wantJson ? res.json(info) : res.sendFile(absPath);
-      }
+
+      const images = dir
+        ? getImagesInDir(path.join(IMG_DIR, dir))
+        : getAllImages(IMG_DIR);
+
+      if (images.length === 0) return res.status(404).send('该目录无图片');
+
+      const random = images[Math.floor(Math.random() * images.length)];
+      const info = await getFileInfo(random);
+
+      if (wantJson) return res.json(info);
+      return res.sendFile(random);
     } catch (err) {
       console.error('[API Error]', err);
       res.status(500).send('服务器错误');
