@@ -1,1 +1,2 @@
-# node-imgapi
+# Furapi的随机图片api
+---
