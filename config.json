@@ -1,11 +1,11 @@
 {
   "web": {
     "httpPort": 3000,
-    "httpsPort": 3001,
+    "httpsPort": -1,
     "host": "0.0.0.0",
     "keyFile": "./ssl/privkey.pem",
     "crtFile": "./ssl/fullchain.pem",
-    "forceHttps": true
+    "forceHttps": false
   },
   "dir": {
     "imgDir": "./img",
