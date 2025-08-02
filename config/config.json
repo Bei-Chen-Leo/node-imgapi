@@ -11,11 +11,12 @@
     "imgDir": "./img",
     "webDir": "./html"
   },
-  "Redis": {
-    "enable": false,
-    "host": "127.0.0.1",
-    "port": 6379,
-    "password": "",
-    "ttl": 3600
+  "cache": {
+    "redisEnable": false,
+    "redisHost": "127.0.0.1",
+    "redisPort": 6379,
+    "redisPassword": "",
+    "mapMaxSize": 200,
+    "mapmaxsize为0": "完全不启用任何缓存"
   }
 }

@@ -3,40 +3,33 @@ const fs = require('fs');
 const path = require('path');
 const { createClient } = require('redis');
 
-module.exports = (config) => {
+module.exports = (dirConfig, cacheConfig) => {
   const router = express.Router();
-  const IMG_DIR = config.imgDir;
-
-  const redisEnable = config.Redis?.enable === true;
-  const redisHost = config.Redis?.host || '127.0.0.1';
-  const redisPort = config.Redis?.port || 6379;
-  const redisPassword = config.Redis?.password || '';
-  const redisTTL = config.Redis?.ttl || 3600;
+  const IMG_DIR = dirConfig.imgDir;
+  const USE_REDIS = cacheConfig.redisEnable;
 
   let redisClient = null;
-
-  if (redisEnable) {
+  if (USE_REDIS) {
     redisClient = createClient({
-      socket: { host: redisHost, port: redisPort },
-      password: redisPassword || undefined,
+      socket: { host: cacheConfig.redisHost, port: cacheConfig.redisPort },
+      password: cacheConfig.redisPassword || undefined
     });
     redisClient.connect().catch(console.error);
   }
+
+  const fileCache = new Map();
+  const MAX_CACHE = cacheConfig.mapMaxSize || 100;
 
   function isImageFile(filename) {
     return /\.(jpg|jpeg|png|gif|webp)$/i.test(filename);
   }
 
-  function formatShanghaiTime(date) {
+  function formatTime(date) {
     return new Intl.DateTimeFormat('zh-CN', {
       timeZone: 'Asia/Shanghai',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false
     }).format(date).replace(/\//g, '-').replace(/,/g, '');
   }
 
@@ -62,31 +55,32 @@ module.exports = (config) => {
   }
 
   async function getFileInfo(filePath) {
-    const key = `imgcache:${filePath}`;
-    if (redisEnable && redisClient) {
-      try {
-        const cached = await redisClient.get(key);
-        if (cached) {
-          return JSON.parse(cached);
-        }
-      } catch (e) {
-        console.error('Redis get error:', e);
-      }
+    const cacheKey = 'img:' + filePath;
+
+    if (USE_REDIS) {
+      const cached = await redisClient.get(cacheKey);
+      if (cached) return JSON.parse(cached);
+    } else if (fileCache.has(filePath)) {
+      const info = fileCache.get(filePath);
+      fileCache.delete(filePath);
+      fileCache.set(filePath, info);
+      return info;
     }
 
     const stats = fs.statSync(filePath);
     const info = {
       filename: path.basename(filePath),
       size: stats.size,
-      mtime: formatShanghaiTime(stats.mtime),
-      path: `/${path.relative(IMG_DIR, filePath).replace(/\\/g, '/')}`
+      mtime: formatTime(stats.mtime),
+      path: '/' + path.relative(IMG_DIR, filePath).replace(/\\/g, '/')
     };
 
-    if (redisEnable && redisClient) {
-      try {
-        await redisClient.setEx(key, redisTTL, JSON.stringify(info));
-      } catch (e) {
-        console.error('Redis set error:', e);
+    if (USE_REDIS) {
+      await redisClient.set(cacheKey, JSON.stringify(info));
+    } else {
+      fileCache.set(filePath, info);
+      if (fileCache.size > MAX_CACHE) {
+        fileCache.delete(fileCache.keys().next().value);
       }
     }
 
@@ -100,40 +94,23 @@ module.exports = (config) => {
       const wantJson = req.query.json === '1';
 
       if (dir && file) {
-        const targetFile = path.join(IMG_DIR, dir, file);
-        if (!fs.existsSync(targetFile) || !fs.statSync(targetFile).isFile()) {
-          return res.status(404).send('图片不存在');
-        }
-        if (wantJson) {
-          return res.json(await getFileInfo(targetFile));
-        }
-        return res.sendFile(targetFile);
+        const filePath = path.join(IMG_DIR, dir, file);
+        if (!fs.existsSync(filePath)) return res.status(404).send('图片不存在');
+        if (wantJson) return res.json(await getFileInfo(filePath));
+        return res.sendFile(filePath);
       }
 
-      let images = [];
+      const images = dir
+        ? getImagesInDir(path.join(IMG_DIR, dir))
+        : getAllImages(IMG_DIR);
 
-      if (!dir) {
-        images = getAllImages(IMG_DIR);
-      } else {
-        const targetDir = path.join(IMG_DIR, dir);
-        if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
-          return res.status(404).send('目录不存在');
-        }
-        images = getImagesInDir(targetDir);
-      }
+      if (images.length === 0) return res.status(404).send('该目录无图片');
 
-      if (images.length === 0) {
-        return res.status(404).send('该目录无图片');
-      }
-
-      const randomImage = images[Math.floor(Math.random() * images.length)];
-
-      if (wantJson) {
-        return res.json(await getFileInfo(randomImage));
-      }
-      return res.sendFile(randomImage);
-    } catch (e) {
-      console.error(e);
+      const random = images[Math.floor(Math.random() * images.length)];
+      if (wantJson) return res.json(await getFileInfo(random));
+      res.sendFile(random);
+    } catch (err) {
+      console.error(err);
       res.status(500).send('服务器错误');
     }
   });
