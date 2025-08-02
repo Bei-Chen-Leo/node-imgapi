@@ -1,13 +1,27 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const { createClient } = require('redis');
 
 module.exports = (config) => {
   const router = express.Router();
   const IMG_DIR = config.imgDir;
-  const MAX_CACHE = config.cacheSize || 100;
 
-  const fileCache = new Map(); // 路径 => 文件信息
+  const redisEnable = config.Redis?.enable === true;
+  const redisHost = config.Redis?.host || '127.0.0.1';
+  const redisPort = config.Redis?.port || 6379;
+  const redisPassword = config.Redis?.password || '';
+  const redisTTL = config.Redis?.ttl || 3600;
+
+  let redisClient = null;
+
+  if (redisEnable) {
+    redisClient = createClient({
+      socket: { host: redisHost, port: redisPort },
+      password: redisPassword || undefined,
+    });
+    redisClient.connect().catch(console.error);
+  }
 
   function isImageFile(filename) {
     return /\.(jpg|jpeg|png|gif|webp)$/i.test(filename);
@@ -22,7 +36,7 @@ module.exports = (config) => {
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
-      hour12: false
+      hour12: false,
     }).format(date).replace(/\//g, '-').replace(/,/g, '');
   }
 
@@ -47,13 +61,17 @@ module.exports = (config) => {
       .map(f => path.join(dir, f));
   }
 
-  function cacheGetFileInfo(filePath) {
-    if (fileCache.has(filePath)) {
-      // 刷新 LRU 顺序
-      const value = fileCache.get(filePath);
-      fileCache.delete(filePath);
-      fileCache.set(filePath, value);
-      return value;
+  async function getFileInfo(filePath) {
+    const key = `imgcache:${filePath}`;
+    if (redisEnable && redisClient) {
+      try {
+        const cached = await redisClient.get(key);
+        if (cached) {
+          return JSON.parse(cached);
+        }
+      } catch (e) {
+        console.error('Redis get error:', e);
+      }
     }
 
     const stats = fs.statSync(filePath);
@@ -64,18 +82,18 @@ module.exports = (config) => {
       path: `/${path.relative(IMG_DIR, filePath).replace(/\\/g, '/')}`
     };
 
-    // 加入缓存
-    fileCache.set(filePath, info);
-    if (fileCache.size > MAX_CACHE) {
-      // 删除最早插入的
-      const oldestKey = fileCache.keys().next().value;
-      fileCache.delete(oldestKey);
+    if (redisEnable && redisClient) {
+      try {
+        await redisClient.setEx(key, redisTTL, JSON.stringify(info));
+      } catch (e) {
+        console.error('Redis set error:', e);
+      }
     }
 
     return info;
   }
 
-  router.get('/:dir?/:file?', (req, res) => {
+  router.get('/:dir?/:file?', async (req, res) => {
     try {
       const dir = req.params.dir;
       const file = req.params.file;
@@ -87,7 +105,7 @@ module.exports = (config) => {
           return res.status(404).send('图片不存在');
         }
         if (wantJson) {
-          return res.json(cacheGetFileInfo(targetFile));
+          return res.json(await getFileInfo(targetFile));
         }
         return res.sendFile(targetFile);
       }
@@ -111,7 +129,7 @@ module.exports = (config) => {
       const randomImage = images[Math.floor(Math.random() * images.length)];
 
       if (wantJson) {
-        return res.json(cacheGetFileInfo(randomImage));
+        return res.json(await getFileInfo(randomImage));
       }
       return res.sendFile(randomImage);
     } catch (e) {

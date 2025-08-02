@@ -3,13 +3,19 @@
     "httpPort": 3000,
     "httpsPort": -1,
     "host": "0.0.0.0",
-    "keyFile": "./ssl/privkey.pem",
-    "crtFile": "./ssl/fullchain.pem",
+    "keyFile": "./certs/server.key.pem",
+    "crtFile": "./certs/server.cert.pem",
     "forceHttps": false
   },
   "dir": {
     "imgDir": "./img",
     "webDir": "./html"
   },
-  "cacheSize": 300
+  "Redis": {
+    "enable": false,
+    "host": "127.0.0.1",
+    "port": 6379,
+    "password": "",
+    "ttl": 3600
+  }
 }

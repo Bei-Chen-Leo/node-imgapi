@@ -4,44 +4,59 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 
-const configPath = path.join(__dirname,'config', 'config.json');
+// 支持外部传入 config 路径
+const argConfigPath = process.argv.find(arg => arg.startsWith('--config='))?.split('=')[1];
+const envConfigPath = process.env.CONFIG_PATH;
+const defaultConfigPath = path.join(__dirname, 'config', 'config.json');
+
+const configPath = path.resolve(argConfigPath || envConfigPath || defaultConfigPath);
+
 let config = {
-  web: {
-    httpPort: 3000,
-    httpsPort: -1,
-    host: '127.0.0.1',
-    keyFile: '',
-    crtFile: '',
-    forceHttps: false
-  },
-  dir: {
-    imgDir: path.join(__dirname, 'img'),
-    webDir: path.join(__dirname, 'web')
-  }
+  web: {
+    httpPort: 3000,
+    httpsPort: -1,
+    host: '127.0.0.1',
+    keyFile: '',
+    crtFile: '',
+    forceHttps: false
+  },
+  dir: {
+    imgDir: path.join(__dirname, 'img'),
+    webDir: path.join(__dirname, 'web')
+  },
+  Redis: {
+    enable: false
+  }
 };
 
 try {
-  if (fs.existsSync(configPath)) {
-    const userConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    config = {
-      web: {
-        httpPort: userConfig.web?.httpPort || config.web.httpPort,
-        httpsPort: userConfig.web?.httpsPort ?? config.web.httpsPort,
-        host: userConfig.web?.host || config.web.host,
-        keyFile: userConfig.web?.keyFile || config.web.keyFile,
-        crtFile: userConfig.web?.crtFile || config.web.crtFile,
-        forceHttps: userConfig.web?.forceHttps ?? config.web.forceHttps
-      },
-      dir: {
-        imgDir: userConfig.dir?.imgDir ? path.resolve(__dirname, userConfig.dir.imgDir) : config.dir.imgDir,
-        webDir: userConfig.dir?.webDir ? path.resolve(__dirname, userConfig.dir.webDir) : config.dir.webDir
-      }
-    };
-  }
+  if (fs.existsSync(configPath)) {
+    const userConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    config = {
+      web: {
+        httpPort: userConfig.web?.httpPort || config.web.httpPort,
+        httpsPort: userConfig.web?.httpsPort ?? config.web.httpsPort,
+        host: userConfig.web?.host || config.web.host,
+        keyFile: userConfig.web?.keyFile || config.web.keyFile,
+        crtFile: userConfig.web?.crtFile || config.web.crtFile,
+        forceHttps: userConfig.web?.forceHttps ?? config.web.forceHttps
+      },
+      dir: {
+        imgDir: userConfig.dir?.imgDir ? path.resolve(__dirname, userConfig.dir.imgDir) : config.dir.imgDir,
+        webDir: userConfig.dir?.webDir ? path.resolve(__dirname, userConfig.dir.webDir) : config.dir.webDir
+      },
+      Redis: {
+        enable: userConfig.Redis?.enable || false,
+        host: userConfig.Redis?.host || '127.0.0.1',
+        port: userConfig.Redis?.port || 6379,
+        password: userConfig.Redis?.password || '',
+        ttl: userConfig.Redis?.ttl || 3600
+      }
+    };
+  }
 } catch (e) {
-  console.error('读取 config.json 失败，使用默认配置:', e);
+  console.error(`读取配置文件失败（${configPath}），使用默认配置:`, e.message);
 }
-
 const app = express();
 const apiRouter = require('./api')(config.dir);
 const updateRouter = require('./update')(config.dir);
