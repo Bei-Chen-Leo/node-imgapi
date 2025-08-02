@@ -3,9 +3,9 @@
     "httpPort": 3000,
     "httpsPort": -1,
     "host": "0.0.0.0",
-    "keyFile": "./certs/server.key.pem",
-    "crtFile": "./certs/server.cert.pem",
-    "forceHttps": false
+    "forceHttps": false,
+    "keyFile": "./ssl/key.pem",
+    "crtFile": "./ssl/cert.pem"
   },
   "dir": {
     "imgDir": "./img",
@@ -13,10 +13,12 @@
   },
   "cache": {
     "redisEnable": false,
-    "redisHost": "127.0.0.1",
+    "redisHost": "redis",
     "redisPort": 6379,
     "redisPassword": "",
-    "mapMaxSize": 200,
-    "mapmaxsize为0": "完全不启用任何缓存"
+    "mapMaxSize": 100
+  },
+  "update": {
+    "updateHours": 6
   }
 }
