@@ -1,6 +1,6 @@
 # Furapi随机图片api
 
-这里是furapi img的github仓库
+这里是furapi img的github仓库  
 [关于代码的md](./CODE.md)
 ---
 # API文档
