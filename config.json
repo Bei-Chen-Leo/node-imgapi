@@ -1,0 +1,15 @@
+{
+  "web": {
+    "httpPort": 3000,
+    "httpsPort": 3001,
+    "host": "0.0.0.0",
+    "keyFile": "./ssl/privkey.pem",
+    "crtFile": "./ssl/fullchain.pem",
+    "forceHttps": true
+  },
+  "dir": {
+    "imgDir": "./img",
+    "webDir": "./html"
+  },
+  "cacheSize": 300
+}
