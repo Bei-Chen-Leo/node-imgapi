@@ -13,7 +13,8 @@ web是关于网页运行，dir定义了图片跟web的目录，剩下的就关�
 那些名字都顾名思义，~~不要告诉我你不认识，不认识就去bing啊~~  
 还需要创建一个.env写入UPDATE_TOKEN=your_token用于刷新list.json  
 
-我也懒得另外去说这些配置了
+我也懒得另外去说这些配置了  
+
 ---
 ## docker
 没错，我们还有docker版本  
