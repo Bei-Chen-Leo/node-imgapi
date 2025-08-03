@@ -8,7 +8,20 @@ module.exports = (dirConfig, cacheConfig) => {
   const IMG_DIR = dirConfig.imgDir;
   const USE_REDIS = cacheConfig.redisEnable;
 
-  // 本地 Map 缓存
+  // —— CORS 中间件 —— 
+  router.use((req, res, next) => {
+    // 允许所有域名跨域访问
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    // 如有需要可以限制特定来源：res.setHeader('Access-Control-Allow-Origin', 'https://example.com');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    // 预检请求直接返回
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(204);
+    }
+    next();
+  });
+
   const fileCache = new Map();
   const MAX_CACHE = cacheConfig.mapMaxSize || 100;
 
@@ -41,22 +54,36 @@ module.exports = (dirConfig, cacheConfig) => {
     redisClient.connect().catch(e => console.error('[Redis Connect Failed]', e.message));
   }
 
-  // 工具：判断图片文件
   function isImageFile(filename) {
     return /\.(jpg|jpeg|png|gif|webp)$/i.test(filename);
   }
 
-  // 工具：格式化 mtime
   function formatTime(date) {
     return new Intl.DateTimeFormat('zh-CN', {
       timeZone: 'Asia/Shanghai',
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
       hour12: false
     }).format(date).replace(/\//g, '-').replace(/,/g, '');
   }
 
-  // 递归列出所有图片
+  function getNowTime() {
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    }).format(new Date()).replace(/\//g, '-').replace(/,/g, '');
+  }
+
   function getAllImages(dir) {
     let images = [];
     const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -68,7 +95,6 @@ module.exports = (dirConfig, cacheConfig) => {
     return images;
   }
 
-  // 列出目录下（非递归）图片
   function getImagesInDir(dir) {
     if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return [];
     return fs.readdirSync(dir)
@@ -76,31 +102,31 @@ module.exports = (dirConfig, cacheConfig) => {
       .map(f => path.join(dir, f));
   }
 
-  // 核心：获取文件信息并缓存
-  async function getFileInfo(filePath) {
+  async function getFileInfo(filePath, ip = 'unknown') {
     const cacheKey = `img:${filePath}`;
-    // 1. Redis 缓存
+    const now = getNowTime();
+
     if (USE_REDIS) {
       try {
         const raw = await redisClient.get(cacheKey);
         if (raw) {
-          console.log('[Redis Cache Hit]', filePath);
+          console.log(`${now} ${ip} [Redis Cache Hit] ${filePath}`);
           return JSON.parse(raw);
         }
       } catch (e) {
-        console.error('[Redis Error]', e.message);
+        console.error(`${now} [Redis Error] ${e.message}`);
       }
     }
-    // 2. 本地 Map 缓存
+
     if (!USE_REDIS && fileCache.has(filePath)) {
       const info = fileCache.get(filePath);
       fileCache.delete(filePath);
-      fileCache.set(filePath, info); // 更新 LRU
-      console.log('[Map Cache Hit]', filePath);
+      fileCache.set(filePath, info);
+      console.log(`${now} ${ip} [Map Cache Hit] ${filePath}`);
       return info;
     }
-    // 3. 缓存未命中
-    console.log('[Cache Miss]', filePath);
+
+    console.log(`${now} ${ip} [Cache Miss] ${filePath}`);
     const stats = fs.statSync(filePath);
     const info = {
       filename: path.basename(filePath),
@@ -108,11 +134,12 @@ module.exports = (dirConfig, cacheConfig) => {
       mtime: formatTime(stats.mtime),
       path: '/api/' + path.relative(IMG_DIR, filePath).replace(/\\/g, '/')
     };
+
     if (USE_REDIS) {
       try {
         await redisClient.set(cacheKey, JSON.stringify(info));
       } catch (e) {
-        console.error('[Redis Set Error]', e.message);
+        console.error(`${now} [Redis Set Error] ${e.message}`);
       }
     } else {
       fileCache.set(filePath, info);
@@ -120,37 +147,36 @@ module.exports = (dirConfig, cacheConfig) => {
         fileCache.delete(fileCache.keys().next().value);
       }
     }
+
     return info;
   }
 
-  // 单路由处理所有请求
   router.get('/*', async (req, res) => {
     try {
       const wantJson = req.query.json === '1';
-      // req.params[0] 去掉开头的 '/'
       const relPath = (req.params[0] || '').replace(/^\/+/, '');
-      // 无 path 则随机全局
+      const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip;
+
       if (!relPath) {
         const all = getAllImages(IMG_DIR);
         if (all.length === 0) return res.status(404).send('该目录无图片');
         const pick = all[Math.floor(Math.random() * all.length)];
-        const info = await getFileInfo(pick);
+        const info = await getFileInfo(pick, ip);
         return wantJson ? res.json(info) : res.sendFile(pick);
       }
-      // 存在路径时
+
       const absPath = path.join(IMG_DIR, relPath);
       if (!fs.existsSync(absPath)) return res.status(404).send('图片不存在／非法路径');
       const stat = fs.statSync(absPath);
+
       if (stat.isDirectory()) {
-        // 目录 → 随机该目录下图片
         const arr = getImagesInDir(absPath);
         if (arr.length === 0) return res.status(404).send('该目录无图片');
         const pick = arr[Math.floor(Math.random() * arr.length)];
-        const info = await getFileInfo(pick);
+        const info = await getFileInfo(pick, ip);
         return wantJson ? res.json(info) : res.sendFile(pick);
       } else {
-        // 文件 → 返回文件或 JSON
-        const info = await getFileInfo(absPath);
+        const info = await getFileInfo(absPath, ip);
         return wantJson ? res.json(info) : res.sendFile(absPath);
       }
     } catch (err) {
