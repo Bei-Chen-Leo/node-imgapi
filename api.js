@@ -19,23 +19,36 @@ const formatTime = date =>
     .replace(/\//g, '-')
     .replace(/,/g, '');
 
-module.exports = (dirConfig, cacheConfig) => {
+module.exports = (config) => {
   const router = express.Router();
+  
+  // 从配置对象中提取所需参数
+  const { dir: dirConfig, cache: cacheConfig, update: updateConfig } = config;
+  
   const IMG_DIR = dirConfig.imgDir;
   const USE_REDIS = cacheConfig.redisEnable;
   const MAX_CACHE = cacheConfig.mapMaxSize || 100;
+  const REDIS_TTL = cacheConfig.redisTTL || 3600; // 默认1小时
+  
+  // 安全获取扫描间隔配置
+  const updateHours = updateConfig?.updateHours || 6;
+  const UPDATE_INTERVAL = updateHours * 3600 * 1000; // 小时转毫秒
 
   // —— CORS 中间件 —— 
   router.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(204);
+    }
     next();
   });
 
   // 初始化 Redis 客户端
   let redisClient = null;
+  let redisHealthy = false;
+  
   if (USE_REDIS) {
     let retries = 0;
     redisClient = createClient({
@@ -51,88 +64,173 @@ module.exports = (dirConfig, cacheConfig) => {
       },
       password: cacheConfig.redisPassword
     });
+    
     redisClient
-      .on('connect', () => console.log('[Redis] 连接成功'))
-      .on('reconnecting', () => console.log('[Redis] 尝试重连…'))
-      .on('end', () => console.warn('[Redis] 已断开'))
-      .on('error', err => console.error('[Redis Error]', err.message));
-    redisClient.connect().catch(err => console.error('[Redis] 连接失败', err.message));
+      .on('connect', () => {
+        redisHealthy = true;
+        const now = formatTime(new Date());
+        console.log(`${now} [Redis] 连接成功`);
+      })
+      .on('reconnecting', () => {
+        redisHealthy = false;
+        const now = formatTime(new Date());
+        console.log(`${now} [Redis] 尝试重连…`);
+      })
+      .on('end', () => {
+        redisHealthy = false;
+        const now = formatTime(new Date());
+        console.warn(`${now} [Redis] 已断开`);
+      })
+      .on('error', err => {
+        redisHealthy = false;
+        const now = formatTime(new Date());
+        console.error(`${now} [Redis Error]`, err.message);
+      });
+    
+    redisClient.connect().catch(err => {
+      const now = formatTime(new Date());
+      console.error(`${now} [Redis] 连接失败`, err.message);
+    });
   }
 
-  // LRU 逻辑替代简单 Map
+  // LRU 缓存
   const fileCache = new Map();
+  
+  // 目录索引系统 { [dir]: [filePath1, filePath2] }
+  const dirIndex = new Map();
+  let lastScanTime = 0;
+  let isScanning = false;
 
-  // 延迟扫描并缓存所有图片路径
-  let allImages = null;
-  async function scanAllImages() {
-    if (allImages) return allImages;
-    const list = [];
-    async function walk(dir) {
-      const entries = await fs.readdir(dir, { withFileTypes: true });
-      await Promise.all(
-        entries.map(async e => {
-          const full = path.join(dir, e.name);
-          if (e.isDirectory()) await walk(full);
-          else if (/\.(jpe?g|png|gif|webp)$/i.test(e.name)) list.push(full);
-        })
-      );
+  // 安全路径检查
+  function isSafePath(testPath) {
+    try {
+      const resolved = path.resolve(IMG_DIR, testPath);
+      return resolved.startsWith(path.resolve(IMG_DIR));
+    } catch {
+      return false;
     }
-    await walk(IMG_DIR);
-    allImages = list;
-    return list;
   }
 
-  // 获取指定目录下的图片列表
-  async function getImagesInDir(dir) {
-    const list = await scanAllImages();
-    return list.filter(p => path.dirname(p) === dir);
+  // 扫描并建立目录索引
+  async function scanAndIndex() {
+    if (isScanning) return;
+    
+    isScanning = true;
+    const startTime = Date.now();
+    const now = formatTime(new Date());
+    console.log(`${now} [Index] 开始扫描图片目录`);
+    
+    try {
+      const newIndex = new Map();
+      let fileCount = 0;
+
+      async function walk(dir) {
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+        await Promise.all(
+          entries.map(async e => {
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) {
+              await walk(full);
+            } else if (/\.(jpe?g|png|gif|webp)$/i.test(e.name)) {
+              fileCount++;
+              const parentDir = path.dirname(full);
+              if (!newIndex.has(parentDir)) {
+                newIndex.set(parentDir, []);
+              }
+              newIndex.get(parentDir).push(full);
+            }
+          })
+        );
+      }
+
+      await walk(IMG_DIR);
+      dirIndex.clear();
+      newIndex.forEach((value, key) => dirIndex.set(key, value));
+      
+      const duration = (Date.now() - startTime) / 1000;
+      console.log(`${now} [Index] 扫描完成，耗时 ${duration.toFixed(2)}秒，找到 ${fileCount} 个文件，${newIndex.size} 个目录`);
+    } catch (err) {
+      console.error(`${now} [Index Error]`, err);
+    } finally {
+      lastScanTime = Date.now();
+      isScanning = false;
+    }
   }
+
+  // 设置定时扫描任务
+  if (UPDATE_INTERVAL > 0) {
+    setInterval(() => {
+      if (!isScanning) scanAndIndex();
+    }, UPDATE_INTERVAL).unref();
+  }
+
+  // 启动时立即扫描
+  scanAndIndex().catch(console.error);
 
   // 获取并缓存文件信息
   async function getFileInfo(filePath, ip = 'unknown') {
     const key = `img:${filePath}`;
     const now = formatTime(new Date());
+    const useRedis = USE_REDIS && redisHealthy;
+    const isProduction = process.env.NODE_ENV === 'production';
 
     // Redis 缓存优先
-    if (USE_REDIS) {
+    if (useRedis) {
       try {
         const cached = await redisClient.get(key);
         if (cached) {
-          console.log(`${now} ${ip} [Redis Hit] ${filePath}`);
+          if (!isProduction) {
+            console.log(`${now} ${ip} [Redis Hit] ${filePath}`);
+          }
           return JSON.parse(cached);
         }
       } catch (e) {
-        console.error(`${now} [Redis Error]`, e.message);
+        if (!isProduction) {
+          console.error(`${now} [Redis Error]`, e.message);
+        }
       }
     }
 
     // 本地 LRU 缓存
-    if (!USE_REDIS && fileCache.has(filePath)) {
+    if (fileCache.has(filePath)) {
       const info = fileCache.get(filePath);
       fileCache.delete(filePath);
       fileCache.set(filePath, info);
-      console.log(`${now} ${ip} [Map Hit] ${filePath}`);
+      if (!isProduction) {
+        console.log(`${now} ${ip} [Map Hit] ${filePath}`);
+      }
       return info;
     }
 
-    console.log(`${now} ${ip} [Cache Miss] ${filePath}`);
+    if (!isProduction) {
+      console.log(`${now} ${ip} [Cache Miss] ${filePath}`);
+    }
+    
     const stats = await fs.stat(filePath);
     const info = {
       filename: path.basename(filePath),
       size: stats.size,
-      mtime: formatTime(stats.mtime),
+      mtime: stats.mtime.getTime(), // 存储时间戳便于比较
       path: '/api/' + path.relative(IMG_DIR, filePath).replace(/\\/g, '/')
     };
 
     // 回写缓存
-    if (USE_REDIS) {
-      redisClient.set(key, JSON.stringify(info)).catch(e =>
-        console.error(`${now} [Redis Set Error]`, e.message)
-      );
+    if (useRedis) {
+      try {
+        // 使用带过期时间的设置
+        await redisClient.setEx(key, REDIS_TTL, JSON.stringify(info));
+      } catch (e) {
+        if (!isProduction) {
+          console.error(`${now} [Redis Set Error]`, e.message);
+        }
+      }
     } else {
       fileCache.set(filePath, info);
+      // 缓存淘汰策略
       if (fileCache.size > MAX_CACHE) {
-        fileCache.delete(fileCache.keys().next().value);
+        // 使用LRU策略删除最久未使用的
+        const oldestKey = fileCache.keys().next().value;
+        fileCache.delete(oldestKey);
       }
     }
 
@@ -140,7 +238,7 @@ module.exports = (dirConfig, cacheConfig) => {
   }
 
   // 路由处理
-  router.get('/*', async (req, res) => {
+  router.get('/*', async (req, res, next) => {
     try {
       const wantJson = req.query.json === '1';
       const rel = (req.params[0] || '').replace(/^\/+/, '');
@@ -148,11 +246,36 @@ module.exports = (dirConfig, cacheConfig) => {
 
       // 根目录随机图片
       if (!rel) {
-        const list = await scanAllImages();
-        if (!list.length) return res.status(404).send('该目录无图片');
-        const pick = list[Math.floor(Math.random() * list.length)];
+        // 如果索引未就绪，等待扫描完成
+        if (dirIndex.size === 0) {
+          await scanAndIndex();
+          if (dirIndex.size === 0) {
+            return res.status(404).send('未找到任何图片');
+          }
+        }
+        
+        // 随机选择一个目录
+        const allDirs = Array.from(dirIndex.keys());
+        const randomDir = allDirs[Math.floor(Math.random() * allDirs.length)];
+        const dirFiles = dirIndex.get(randomDir) || [];
+        if (dirFiles.length === 0) return res.status(404).send('该目录无图片');
+        
+        const pick = dirFiles[Math.floor(Math.random() * dirFiles.length)];
         const info = await getFileInfo(pick, ip);
+        
+        // 大文件优化
+        if (info.size > 1024 * 1024) {
+          return wantJson 
+            ? res.json(info) 
+            : res.sendFile(pick, { maxAge: 86400000, dotfiles: 'ignore' });
+        }
+        
         return wantJson ? res.json(info) : res.sendFile(pick);
+      }
+
+      // 安全路径检查
+      if (!isSafePath(rel)) {
+        return res.status(403).send('非法路径');
       }
 
       const abs = path.join(IMG_DIR, rel);
@@ -165,19 +288,68 @@ module.exports = (dirConfig, cacheConfig) => {
 
       // 目录下随机图片
       if (stat.isDirectory()) {
-        const arr = await getImagesInDir(abs);
-        if (!arr.length) return res.status(404).send('该目录无图片');
-        const pick = arr[Math.floor(Math.random() * arr.length)];
+        // 使用目录索引获取文件
+        let dirFiles = dirIndex.get(abs) || [];
+        
+        // 如果索引中不存在，尝试扫描该目录
+        if (dirFiles.length === 0) {
+          try {
+            const files = await fs.readdir(abs);
+            dirFiles = files.filter(f => /\.(jpe?g|png|gif|webp)$/i.test(f))
+                          .map(f => path.join(abs, f));
+            
+            if (dirFiles.length > 0) {
+              dirIndex.set(abs, dirFiles);
+            }
+          } catch {
+            // 忽略错误，继续处理
+          }
+        }
+        
+        if (dirFiles.length === 0) {
+          return res.status(404).send('该目录无图片');
+        }
+        
+        const pick = dirFiles[Math.floor(Math.random() * dirFiles.length)];
         const info = await getFileInfo(pick, ip);
+        
+        // 大文件优化
+        if (info.size > 1024 * 1024) {
+          return wantJson 
+            ? res.json(info) 
+            : res.sendFile(pick, { maxAge: 86400000, dotfiles: 'ignore' });
+        }
+        
         return wantJson ? res.json(info) : res.sendFile(pick);
       }
 
       // 单个文件
       const info = await getFileInfo(abs, ip);
+      
+      // 大文件优化
+      if (info.size > 1024 * 1024) {
+        return wantJson 
+          ? res.json(info) 
+          : res.sendFile(abs, { maxAge: 86400000, dotfiles: 'ignore' });
+      }
+      
       return wantJson ? res.json(info) : res.sendFile(abs);
     } catch (err) {
-      console.error('[API Error]', err);
-      res.status(500).send('服务器错误');
+      next(err); // 将错误传递给错误处理中间件
+    }
+  });
+
+  // 错误处理中间件（放在路由之后）
+  router.use((err, req, res, next) => {
+    const now = formatTime(new Date());
+    console.error(`${now} [API Error]`, err);
+    res.status(500).send('服务器错误');
+  });
+
+  // 清理资源
+  process.on('SIGTERM', () => {
+    if (redisClient && redisClient.isOpen) {
+      redisClient.quit().catch(() => {});
     }
   });
 

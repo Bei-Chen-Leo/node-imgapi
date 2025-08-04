@@ -1,0 +1,93 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    overflow-x: auto; /* Ensure scrollbars appear for narrow devices */
+}
+
+header {
+    background: linear-gradient(135deg, #764ba2, #3498db);
+    height: 8rem;
+    display: flex;
+    align-items: center;
+    flex-direction: column;
+}
+
+h1 {
+    margin: 0;
+    padding-top: 2rem; /* Adjust position to be slightly higher */
+    color: white;
+    font-size: 1.4rem;
+}
+
+.nav {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    overflow-x: auto; /* Enable horizontal scrolling for narrow devices */
+    white-space: nowrap; /* Prevent wrapping of navigation items */
+}
+
+.ico {
+    display: none; /* Hide the icon */
+}
+
+ul li {
+    list-style-type: none;
+}
+
+li a {
+    text-decoration: none;
+    color: white;
+    padding: 10px;
+    display: inline-block;
+    transition: all 0.3s;
+}
+
+li a:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: #764ba2;
+    border-radius: 5px;
+}
+
+ul {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 1rem;
+}
+
+footer {
+    background: #2c3e50;
+    color: white;
+    text-align: center;
+    padding: 2rem 0;
+    position: relative;
+    bottom: 0;
+    width: 100%;
+}
+
+footer p {
+    margin: 0;
+    font-size: 0.9rem;
+}
+
+footer a {
+    color: #3498db;
+    text-decoration: none;
+    transition: all 0.3s;
+}
+
+footer a:hover {
+    text-decoration: underline;
+    color: #764ba2;
+}
+.logo{
+    display: flex;
+    width: 100%;
+    justify-content: center;
+}
+.nav-links {
+    padding-top: 0.5rem; /* Adjust padding to align with the header */
+    overflow-x: auto; /* Add horizontal scroll for narrow devices */
+}

@@ -1,0 +1,89 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+}
+
+header {
+    background: linear-gradient(135deg, #764ba2, #3498db);
+    height: 5rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.logo {
+    float: left;
+    display: flex;
+    align-items: center;
+    margin-left: 3em;
+}
+
+.logo h1 {
+    margin-left: 10px;
+    color: white;
+    font-size: 1.3rem;
+}
+
+.nav {
+    float: right;
+    display: flex;
+    align-items: center;
+    margin-right: 1.8em;
+}
+
+ul li {
+    list-style-type: none;
+}
+
+li a {
+    text-decoration: none;
+    color: white;
+    padding: 10px;
+    display: inline-block;
+    transition: all 0.3s;
+}
+
+li a:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: #764ba2;
+    border-radius: 5px;
+}
+
+ul {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 0;
+    padding: 1rem;
+}
+
+footer {
+    background: #2c3e50;
+    color: white;
+    text-align: center;
+    padding: 2rem 0;
+    position: relative;
+    bottom: 0;
+    width: 100%;
+}
+
+footer p {
+    margin: 0;
+    font-size: 0.9rem;
+}
+
+footer a {
+    color: #3498db;
+    text-decoration: none;
+    transition: all 0.3s;
+}
+
+footer a:hover {
+    text-decoration: underline;
+    color: #764ba2;
+}
+
+.cleanfloat {
+    clear: both; /* Clear floats to prevent layout issues */
+}

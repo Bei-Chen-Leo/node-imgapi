@@ -17,9 +17,9 @@
     "redisPort": 6379,
     "redisPassword": "",
     "mapMaxSize": 100,
-    "redisTTL": 3600
+    "redisTTL": 3600  // 新增Redis缓存过期时间
   },
   "update": {
-    "updateHours": 6
+    "updateHours": 6   // 扫描间隔配置
   }
 }

@@ -6,6 +6,8 @@ const fsSync = require('fs')
 const express = require('express')
 const http = require('http')
 const https = require('https')
+const cluster = require('cluster')
+const numCPUs = require('os').cpus().length
 
 // 默认配置
 const defaultConfig = {
@@ -26,10 +28,11 @@ const defaultConfig = {
     redisHost: '127.0.0.1',
     redisPort: 6379,
     redisPassword: '',
-    mapMaxSize: 100
+    mapMaxSize: 100,
+    redisTTL: 3600
   },
   update: {
-    updateHours: -1
+    updateHours: 6
   }
 }
 
@@ -102,57 +105,82 @@ function startServer({ port, host, redirectHttps, sslOptions, handler }) {
 
 // 主入口
 ;(async () => {
-  const { web, dir, cache, update } = await loadConfig()
-  const app = express()
-
-  // 静态目录
-  app.use(express.static(__dirname))
-
-  // HTML 访问日志
-  app.use((req, res, next) => {
-    if (req.path === '/' || req.path.endsWith('.html')) {
-      const now = getNowTime()
-      const ip = (req.headers['x-forwarded-for'] || req.ip).split(',')[0].trim()
-      console.log(`${now} ${ip} [HTML Access] ${req.method} ${req.originalUrl}`)
+  if (cluster.isPrimary && process.env.NODE_ENV === 'production') {
+    console.log(`主进程 ${process.pid} 正在运行`);
+    
+    // 根据CPU核心数fork工作进程（不超过4个）
+    const workers = Math.min(numCPUs, 4);
+    for (let i = 0; i < workers; i++) {
+      cluster.fork();
     }
-    next()
-  })
+    
+    cluster.on('exit', (worker) => {
+      console.log(`工作进程 ${worker.process.pid} 已退出，正在重启...`);
+      cluster.fork();
+    });
+  } else {
+    const config = await loadConfig();
+    const { web, dir, cache, update } = config;
+    const app = express()
 
-  // 挂载路由
-  app.use('/api', require('./api')(dir, cache))
-  app.use('/update', require('./update')(dir, update))
-  app.use('/', require('./web')(dir))
+    // 静态目录
+    app.use(express.static(__dirname))
 
-  // 如果启用 HTTPS，读取证书并准备选项
-  let sslOptions = null
-  if (web.httpsPort > 0) {
-    try {
-      sslOptions = {
-        key: await fs.readFile(path.resolve(__dirname, web.keyFile)),
-        cert: await fs.readFile(path.resolve(__dirname, web.crtFile)),
-        port: web.httpsPort
+    // HTML 访问日志
+    app.use((req, res, next) => {
+      if (req.path === '/' || req.path.endsWith('.html')) {
+        const now = getNowTime()
+        const ip = (req.headers['x-forwarded-for'] || req.ip).split(',')[0].trim()
+        console.log(`${now} ${ip} [HTML Access] ${req.method} ${req.originalUrl}`)
       }
-    } catch (e) {
-      console.error('HTTPS 启动失败，证书读取错误:', e)
-      sslOptions = null
-    }
-  }
-
-  // 启动服务
-  await Promise.all([
-    web.httpsPort > 0 && startServer({
-      port: web.httpsPort,
-      host: web.host,
-      redirectHttps: false,
-      sslOptions,
-      handler: app
-    }),
-    web.httpPort > 0 && startServer({
-      port: web.httpPort,
-      host: web.host,
-      redirectHttps: web.forceHttps && sslOptions != null,
-      sslOptions: null,
-      handler: app
+      next()
     })
-  ].filter(Boolean))
+
+    // 挂载路由
+    app.use('/api', require('./api')({ dir, cache, update }))
+    app.use('/update', require('./update')(dir, update))
+    app.use('/', require('./web')(dir))
+
+    // 错误处理中间件
+    app.use((err, req, res, next) => {
+      const now = getNowTime();
+      console.error(`${now} [App Error]`, err);
+      res.status(500).send('服务器错误');
+    });
+
+    // 如果启用 HTTPS，读取证书并准备选项
+    let sslOptions = null
+    if (web.httpsPort > 0) {
+      try {
+        sslOptions = {
+          key: await fs.readFile(path.resolve(__dirname, web.keyFile)),
+          cert: await fs.readFile(path.resolve(__dirname, web.crtFile)),
+          port: web.httpsPort
+        }
+      } catch (e) {
+        console.error('HTTPS 启动失败，证书读取错误:', e)
+        sslOptions = null
+      }
+    }
+
+    // 启动服务
+    await Promise.all([
+      web.httpsPort > 0 && startServer({
+        port: web.httpsPort,
+        host: web.host,
+        redirectHttps: false,
+        sslOptions,
+        handler: app
+      }),
+      web.httpPort > 0 && startServer({
+        port: web.httpPort,
+        host: web.host,
+        redirectHttps: web.forceHttps && sslOptions != null,
+        sslOptions: null,
+        handler: app
+      })
+    ].filter(Boolean))
+    
+    console.log(`工作进程 ${process.pid} 已启动`);
+  }
 })()
