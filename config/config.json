@@ -1,25 +1,54 @@
 {
-  "web": {
-    "httpPort": 3000,
-    "httpsPort": -1,
-    "host": "0.0.0.0",
-    "forceHttps": false,
-    "keyFile": "./ssl/key.pem",
-    "crtFile": "./ssl/cert.pem"
+  "redis": {
+    "host": "localhost",
+    "port": 6379,
+    "password": "",
+    "db": 0,
+    "reconnect": {
+      "maxRetries": 5,
+      "retryInterval": 8000,
+      "connectTimeout": 10000
+    }
   },
-  "dir": {
-    "imgDir": "./img",
-    "webDir": "./html"
+  "server": {
+    "http_port": 3000,
+    "https_port": 3001,
+    "ssl": {
+      "enabled": true,
+      "cert": "./ssl/fullchain.pem",
+      "key": "./ssl/privkey.pem"
+    },
+    "workers": 4,
+    "cors": {
+      "enabled": true,
+      "origins": "*",
+      "methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "headers": "Content-Type, Authorization"
+    }
   },
-  "cache": {
-    "redisEnable": false,
-    "redisHost": "127.0.0.1",
-    "redisPort": 6379,
-    "redisPassword": "",
-    "mapMaxSize": 100,
-    "redisTTL": 3600
+  "paths": {
+    "images": "./img",
+    "html": "./public"
   },
   "update": {
-    "updateHours": 6
+    "hours": -1,
+    "supportedExtensions": [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"]
+  },
+  "cache": {
+    "enabled": true,
+    "ttl": 3600,
+    "redis_ttl": 7200,
+    "map_cleanup_interval": 60000
+  },
+  "timezone": "Asia/Shanghai",
+  "logging": {
+    "enabled": true,
+    "level": "INFO",
+    "levels": {
+      "ERROR": 0,
+      "WARN": 1,
+      "INFO": 2,
+      "DEBUG": 3
+    }
   }
 }

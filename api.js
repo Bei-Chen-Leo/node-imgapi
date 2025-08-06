@@ -1,357 +1,236 @@
-const express = require('express');
-const fs = require('fs/promises');
+const fs = require('fs-extra');
 const path = require('path');
-const { createClient } = require('redis');
+const mimeTypes = require('mime-types');
+const { log, safeReadJson } = require('./utils');
 
-// 简化时间格式函数
-const formatTime = date =>
-  new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  })
-    .format(date)
-    .replace(/\//g, '-')
-    .replace(/,/g, '');
+let config;
+let cacheManager;
+let imageList = {};
+let imageDetails = [];
 
-module.exports = (config) => {
-  const router = express.Router();
-  
-  // 从配置对象中提取所需参数
-  const { dir: dirConfig, cache: cacheConfig, update: updateConfig } = config;
-  
-  const IMG_DIR = dirConfig.imgDir;
-  const USE_REDIS = cacheConfig.redisEnable;
-  const MAX_CACHE = cacheConfig.mapMaxSize || 100;
-  const REDIS_TTL = cacheConfig.redisTTL || 3600; // 默认1小时
-  
-  // 安全获取扫描间隔配置
-  const updateHours = updateConfig?.updateHours || 6;
-  const UPDATE_INTERVAL = updateHours * 3600 * 1000; // 小时转毫秒
-
-  // —— CORS 中间件 —— 
-  router.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') {
-      return res.sendStatus(204);
-    }
-    next();
-  });
-
-  // 初始化 Redis 客户端
-  let redisClient = null;
-  let redisHealthy = false;
-  
-  if (USE_REDIS) {
-    let retries = 0;
-    redisClient = createClient({
-      socket: {
-        host: cacheConfig.redisHost,
-        port: cacheConfig.redisPort,
-        connectTimeout: 5000,
-        reconnectStrategy: attempt => {
-          retries += 1;
-          if (retries > 5) return new Error('停止重连');
-          return Math.min(1000 * attempt, 5000);
+// 加载图片列表
+async function loadImageList() {
+    try {
+        const listPath = path.join(__dirname, 'list.json');
+        imageList = await safeReadJson(listPath, {});
+        const detailsPath = path.join(__dirname, 'images-details.json');
+        imageDetails = await safeReadJson(detailsPath, []);
+        if (imageDetails.length === 0 && Object.keys(imageList).length > 0) {
+            imageDetails = convertListToDetails(imageList);
+            log(`Converted ${imageDetails.length} images from list.json format`, 'WARN', 'API');
         }
-      },
-      password: cacheConfig.redisPassword
-    });
-    
-    redisClient
-      .on('connect', () => {
-        redisHealthy = true;
-        const now = formatTime(new Date());
-        console.log(`${now} [Redis] 连接成功`);
-      })
-      .on('reconnecting', () => {
-        redisHealthy = false;
-        const now = formatTime(new Date());
-        console.log(`${now} [Redis] 尝试重连…`);
-      })
-      .on('end', () => {
-        redisHealthy = false;
-        const now = formatTime(new Date());
-        console.warn(`${now} [Redis] 已断开`);
-      })
-      .on('error', err => {
-        redisHealthy = false;
-        const now = formatTime(new Date());
-        console.error(`${now} [Redis Error]`, err.message);
-      });
-    
-    redisClient.connect().catch(err => {
-      const now = formatTime(new Date());
-      console.error(`${now} [Redis] 连接失败`, err.message);
-    });
-  }
-
-  // LRU 缓存
-  const fileCache = new Map();
-  
-  // 目录索引系统 { [dir]: [filePath1, filePath2] }
-  const dirIndex = new Map();
-  let lastScanTime = 0;
-  let isScanning = false;
-
-  // 安全路径检查
-  function isSafePath(testPath) {
-    try {
-      const resolved = path.resolve(IMG_DIR, testPath);
-      return resolved.startsWith(path.resolve(IMG_DIR));
-    } catch {
-      return false;
+        log(`Image list loaded: ${Object.keys(imageList).length} directories, ${imageDetails.length} total images`, 'INFO', 'API');
+    } catch (err) {
+        log(`Failed to load image list: ${err.message}`, 'ERROR', 'API');
+        imageList = {};
+        imageDetails = [];
     }
-  }
+}
 
-  // 扫描并建立目录索引
-  async function scanAndIndex() {
-    if (isScanning) return;
-    
-    isScanning = true;
-    const startTime = Date.now();
-    const now = formatTime(new Date());
-    console.log(`${now} [Index] 开始扫描图片目录`);
-    
-    try {
-      const newIndex = new Map();
-      let fileCount = 0;
-
-      async function walk(dir) {
-        const entries = await fs.readdir(dir, { withFileTypes: true });
-        await Promise.all(
-          entries.map(async e => {
-            const full = path.join(dir, e.name);
-            if (e.isDirectory()) {
-              await walk(full);
-            } else if (/\.(jpe?g|png|gif|webp)$/i.test(e.name)) {
-              fileCount++;
-              const parentDir = path.dirname(full);
-              if (!newIndex.has(parentDir)) {
-                newIndex.set(parentDir, []);
-              }
-              newIndex.get(parentDir).push(full);
+// 从 list.json 转详细信息
+function convertListToDetails(listData) {
+    const details = [];
+    const baseImagePath = path.resolve(config.paths.images);
+    for (const [directory, files] of Object.entries(listData)) {
+        if (!files || typeof files !== 'object') continue;
+        for (const [filename, uploadtime] of Object.entries(files)) {
+            try {
+                const dirPath = directory === '_root' ? '' : directory;
+                const fullPath = path.join(baseImagePath, dirPath, filename);
+                details.push({
+                    name: filename,
+                    size: 0,
+                    uploadtime,
+                    // 这里是相对路径，用于拼接真实 URL
+                    path: path.join(dirPath, filename).replace(/\\/g, '/'),
+                    _fullPath: fullPath,
+                    _directory: directory,
+                    _extension: path.extname(filename).toLowerCase(),
+                    _mimeType: mimeTypes.lookup(fullPath) || 'application/octet-stream'
+                });
+            } catch (itemErr) {
+                log(`Error processing item ${filename}: ${itemErr.message}`, 'WARN', 'API');
             }
-          })
+        }
+    }
+    return details;
+}
+
+function setCorsHeaders(res) {
+    if (config.server.cors.enabled) {
+        res.setHeader('Access-Control-Allow-Origin', config.server.cors.origins);
+        res.setHeader('Access-Control-Allow-Methods', config.server.cors.methods);
+        res.setHeader('Access-Control-Allow-Headers', config.server.cors.headers);
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
+}
+
+function getRandomImage(directory = null) {
+    if (imageDetails.length === 0) return null;
+    let filtered = imageDetails;
+    if (directory) {
+        filtered = filtered.filter(img =>
+            directory === '_root'
+                ? img._directory === '_root'
+                : img._directory === directory || img.path.startsWith(directory + '/')
         );
-      }
-
-      await walk(IMG_DIR);
-      dirIndex.clear();
-      newIndex.forEach((value, key) => dirIndex.set(key, value));
-      
-      const duration = (Date.now() - startTime) / 1000;
-      console.log(`${now} [Index] 扫描完成，耗时 ${duration.toFixed(2)}秒，找到 ${fileCount} 个文件，${newIndex.size} 个目录`);
-    } catch (err) {
-      console.error(`${now} [Index Error]`, err);
-    } finally {
-      lastScanTime = Date.now();
-      isScanning = false;
     }
-  }
+    if (filtered.length === 0) return null;
+    return filtered[Math.floor(Math.random() * filtered.length)];
+}
 
-  // 设置定时扫描任务
-  if (UPDATE_INTERVAL > 0) {
-    setInterval(() => {
-      if (!isScanning) scanAndIndex();
-    }, UPDATE_INTERVAL).unref();
-  }
+function findSpecificImage(directory, filename) {
+    return imageDetails.find(img =>
+        directory === '_root'
+            ? img._directory === '_root' && img.name === filename
+            : img.path === path.join(directory, filename).replace(/\\/g, '/')
+    );
+}
 
-  // 启动时立即扫描
-  scanAndIndex().catch(console.error);
+function isRandomRequest(parts) {
+    return parts.length < 2;
+}
 
-  // 获取并缓存文件信息
-  async function getFileInfo(filePath, ip = 'unknown') {
-    const key = `img:${filePath}`;
-    const now = formatTime(new Date());
-    const useRedis = USE_REDIS && redisHealthy;
-    const isProduction = process.env.NODE_ENV === 'production';
+function generateCacheKey(req, parts) {
+    if (isRandomRequest(parts)) return null;
+    const base = `api:${req.path}`;
+    const suffix = req.query.json === '1' ? ':json' : ':file';
+    return base + suffix;
+}
 
-    // Redis 缓存优先
-    if (useRedis) {
-      try {
-        const cached = await redisClient.get(key);
-        if (cached) {
-          if (!isProduction) {
-            console.log(`${now} ${ip} [Redis Hit] ${filePath}`);
-          }
-          return JSON.parse(cached);
-        }
-      } catch (e) {
-        if (!isProduction) {
-          console.error(`${now} [Redis Error]`, e.message);
-        }
-      }
-    }
+async function handleApiRequest(req, res) {
+    setCorsHeaders(res);
+    if (req.method === 'OPTIONS') return res.status(200).end();
 
-    // 本地 LRU 缓存
-    if (fileCache.has(filePath)) {
-      const info = fileCache.get(filePath);
-      fileCache.delete(filePath);
-      fileCache.set(filePath, info);
-      if (!isProduction) {
-        console.log(`${now} ${ip} [Map Hit] ${filePath}`);
-      }
-      return info;
-    }
+    const isJson = req.query.json === '1';
+    const parts = req.path.split('/').filter(p => p);
+    parts.shift(); // 去掉 'api'
 
-    if (!isProduction) {
-      console.log(`${now} ${ip} [Cache Miss] ${filePath}`);
-    }
-    
-    const stats = await fs.stat(filePath);
-    const info = {
-      filename: path.basename(filePath),
-      size: stats.size,
-      mtime: stats.mtime.getTime(), // 存储时间戳便于比较
-      path: '/api/' + path.relative(IMG_DIR, filePath).replace(/\\/g, '/')
-    };
+    let imagePath, imageInfo;
+    const isRandom = isRandomRequest(parts);
+    const cacheKey = generateCacheKey(req, parts);
 
-    // 回写缓存
-    if (useRedis) {
-      try {
-        // 使用带过期时间的设置
-        await redisClient.setEx(key, REDIS_TTL, JSON.stringify(info));
-      } catch (e) {
-        if (!isProduction) {
-          console.error(`${now} [Redis Set Error]`, e.message);
-        }
-      }
-    } else {
-      fileCache.set(filePath, info);
-      // 缓存淘汰策略
-      if (fileCache.size > MAX_CACHE) {
-        // 使用LRU策略删除最久未使用的
-        const oldestKey = fileCache.keys().next().value;
-        fileCache.delete(oldestKey);
-      }
-    }
+    // cleanPath 用于错误返回时指示请求端点
+    const cleanPath = req.originalUrl.split('?')[0];
 
-    return info;
-  }
-
-  // 路由处理
-  router.get('/*', async (req, res, next) => {
     try {
-      const wantJson = req.query.json === '1';
-      const rel = (req.params[0] || '').replace(/^\/+/, '');
-      const ip = (req.headers['x-forwarded-for'] || req.ip).split(',')[0].trim();
+        // 缓存检查（仅限指定文件请求）
+        if (!isRandom && cacheKey) {
+            const cached = await cacheManager.get(cacheKey);
+            if (cached) {
+                log(`Cache hit: ${cacheKey}`, 'DEBUG', 'API', req);
+                if (isJson) return res.json(cached);
 
-      // 根目录随机图片
-      if (!rel) {
-        // 如果索引未就绪，等待扫描完成
-        if (dirIndex.size === 0) {
-          await scanAndIndex();
-          if (dirIndex.size === 0) {
-            return res.status(404).send('未找到任何图片');
-          }
-        }
-        
-        // 随机选择一个目录
-        const allDirs = Array.from(dirIndex.keys());
-        const randomDir = allDirs[Math.floor(Math.random() * allDirs.length)];
-        const dirFiles = dirIndex.get(randomDir) || [];
-        if (dirFiles.length === 0) return res.status(404).send('该目录无图片');
-        
-        const pick = dirFiles[Math.floor(Math.random() * dirFiles.length)];
-        const info = await getFileInfo(pick, ip);
-        
-        // 大文件优化
-        if (info.size > 1024 * 1024) {
-          return wantJson 
-            ? res.json(info) 
-            : res.sendFile(pick, { maxAge: 86400000, dotfiles: 'ignore' });
-        }
-        
-        return wantJson ? res.json(info) : res.sendFile(pick);
-      }
-
-      // 安全路径检查
-      if (!isSafePath(rel)) {
-        return res.status(403).send('非法路径');
-      }
-
-      const abs = path.join(IMG_DIR, rel);
-      let stat;
-      try {
-        stat = await fs.stat(abs);
-      } catch {
-        return res.status(404).send('图片不存在／非法路径');
-      }
-
-      // 目录下随机图片
-      if (stat.isDirectory()) {
-        // 使用目录索引获取文件
-        let dirFiles = dirIndex.get(abs) || [];
-        
-        // 如果索引中不存在，尝试扫描该目录
-        if (dirFiles.length === 0) {
-          try {
-            const files = await fs.readdir(abs);
-            dirFiles = files.filter(f => /\.(jpe?g|png|gif|webp)$/i.test(f))
-                          .map(f => path.join(abs, f));
-            
-            if (dirFiles.length > 0) {
-              dirIndex.set(abs, dirFiles);
+                const fp = cached._fullPath || cached.fullPath || path.resolve(cached.path);
+                if (await fs.pathExists(fp)) {
+                    res.setHeader('Content-Type', mimeTypes.lookup(fp) || 'image/jpeg');
+                    res.setHeader('Cache-Control', 'public, max-age=3600');
+                    return res.sendFile(fp);
+                }
+                await cacheManager.del(cacheKey);
+                log(`Cleared stale cache: ${cacheKey}`, 'WARN', 'API', req);
             }
-          } catch {
-            // 忽略错误，继续处理
-          }
         }
-        
-        if (dirFiles.length === 0) {
-          return res.status(404).send('该目录无图片');
-        }
-        
-        const pick = dirFiles[Math.floor(Math.random() * dirFiles.length)];
-        const info = await getFileInfo(pick, ip);
-        
-        // 大文件优化
-        if (info.size > 1024 * 1024) {
-          return wantJson 
-            ? res.json(info) 
-            : res.sendFile(pick, { maxAge: 86400000, dotfiles: 'ignore' });
-        }
-        
-        return wantJson ? res.json(info) : res.sendFile(pick);
-      }
 
-      // 单个文件
-      const info = await getFileInfo(abs, ip);
-      
-      // 大文件优化
-      if (info.size > 1024 * 1024) {
-        return wantJson 
-          ? res.json(info) 
-          : res.sendFile(abs, { maxAge: 86400000, dotfiles: 'ignore' });
-      }
-      
-      return wantJson ? res.json(info) : res.sendFile(abs);
+        // 路由处理
+        let img;
+        if (parts.length === 0) {
+            img = getRandomImage();
+            log('Random all-images', 'DEBUG', 'API', req);
+        } else if (parts.length === 1) {
+            img = getRandomImage(parts[0]);
+            log(`Random directory ${parts[0]}`, 'DEBUG', 'API', req);
+        } else {
+            img = findSpecificImage(parts[0], parts.slice(1).join('/'));
+            if (img && await fs.pathExists(img._fullPath)) {
+                log(`Specific image ${parts.join('/')}`, 'DEBUG', 'API', req);
+            } else {
+                img = null;
+            }
+        }
+
+        if (!img) {
+            log('Image not found', 'WARN', 'API', req);
+            return res.status(404).json({
+                error: 'Image not found',
+                path: cleanPath,
+                message: parts.length < 2
+                    ? (parts.length === 0 ? 'No images available' : `No images in directory ${parts[0]}`)
+                    : `Image not found: ${parts.join('/')}`
+            });
+        }
+
+        // 真正文件系统路径
+        imagePath = img._fullPath;
+        // 生成真正对外的 URL path：/api/<relative-path>
+        const webPath = '/api/' + img.path;
+
+        imageInfo = {
+            name: img.name,
+            size: img.size,
+            uploadtime: img.uploadtime,
+            path: webPath
+        };
+
+        // 写缓存
+        if (!isRandom && cacheKey) {
+            await cacheManager.set(cacheKey, {
+                ...imageInfo,
+                _fullPath: imagePath,
+                cached_at: require('./utils').getCurrentTimestamp()
+            });
+            log(`Cached ${cacheKey}`, 'DEBUG', 'API', req);
+        }
+
+        // JSON 返回
+        if (isJson) {
+            log('Returning JSON response', 'DEBUG', 'API', req);
+            return res.json(imageInfo);
+        }
+
+        // 文件返回
+        res.setHeader('Content-Type', mimeTypes.lookup(imagePath) || 'image/jpeg');
+        res.setHeader('Cache-Control', isRandom ? 'no-cache, no-store, must-revalidate' : 'public, max-age=3600');
+        res.setHeader('X-Image-Name', path.basename(imagePath));
+        res.setHeader('X-Image-Path', imageInfo.path);
+        res.setHeader('X-Is-Random', isRandom.toString());
+        log(`Returning file (random=${isRandom})`, 'DEBUG', 'API', req);
+        return res.sendFile(path.resolve(imagePath));
+
     } catch (err) {
-      next(err); // 将错误传递给错误处理中间件
+        log(`API error: ${err.message}`, 'ERROR', 'API', req);
+        log(`Stack: ${err.stack}`, 'DEBUG', 'API');
+        return res.status(500).json({
+            error: 'Internal server error',
+            message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+        });
     }
-  });
+}
 
-  // 错误处理中间件（放在路由之后）
-  router.use((err, req, res, next) => {
-    const now = formatTime(new Date());
-    console.error(`${now} [API Error]`, err);
-    res.status(500).send('服务器错误');
-  });
+// 获取 API 状态
+function getApiStats() {
+    return {
+        images: { total: imageDetails.length, directories: Object.keys(imageList).length },
+        cache: cacheManager.getStatus(),
+        caching: {
+            randomRequestsCached: false,
+            specificImagesCached: true,
+            description: 'Only specific image requests are cached to ensure proper randomization'
+        }
+    };
+}
 
-  // 清理资源
-  process.on('SIGTERM', () => {
-    if (redisClient && redisClient.isOpen) {
-      redisClient.quit().catch(() => {});
-    }
-  });
+// 启动服务
+async function start(appConfig, cacheMgr) {
+    config = appConfig;
+    cacheManager = cacheMgr;
+    process.env.WORKER_ID = process.env.WORKER_ID ||
+        (require('cluster').worker ? require('cluster').worker.id : '1');
+    await loadImageList();
+    setInterval(loadImageList, 60000);
+    log(`API started with ${imageDetails.length} images`, 'INFO', 'API');
+    log('Cache policy: random ⛔, specific ✅', 'INFO', 'API');
+    return { handleApiRequest, loadImageList, getApiStats };
+}
 
-  return router;
-};
+module.exports = { start };
