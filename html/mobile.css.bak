@@ -24,7 +24,7 @@ h1 {
     width: 100%;
     display: flex;
     justify-content: center;
-    overflow-y: auto; /* Enable horizontal scrolling for narrow devices */
+    overflow-x: auto; /* Enable horizontal scrolling for narrow devices */
     white-space: nowrap; /* Prevent wrapping of navigation items */
 }
 
@@ -89,5 +89,5 @@ footer a:hover {
 }
 .nav-links {
     padding-top: 0.5rem; /* Adjust padding to align with the header */
-    overflow-y: auto; /* Add horizontal scroll for narrow devices */
+    overflow-x: auto; /* Add horizontal scroll for narrow devices */
 }
