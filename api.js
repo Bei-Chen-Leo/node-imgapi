@@ -1,3 +1,9 @@
+/**
+ * @file API Service
+ * @author Bei-Chen-Leo
+ * @date 2025-08-06 14:57:39
+ */
+
 const fs = require('fs-extra');
 const path = require('path');
 const mimeTypes = require('mime-types');
@@ -13,27 +19,122 @@ const fileExistsCache = new Map();
 const FILE_CACHE_TTL = 300000; // 5分钟缓存
 const MAX_FILE_CACHE_SIZE = 10000;
 
-// 请求限流
-const requestCounts = new Map();
-const REQUEST_LIMIT = 200; // 每秒最大请求数
-const WINDOW_SIZE = 1000; // 1秒窗口
-const MAX_CLIENTS = 1000; // 最大客户端跟踪数
+// 限流器实现
+const requestLimiter = {
+    windows: new Map(),
+    windowSize: 1000,
+    limit: 1,
+    maxClients: 50,
+    enabled: true,
+    cleanupInterval: 60000,
 
-// 缓存的文件存在性检查
+    initialize(config) {
+        if (!config.rate_limit) {
+            log('Rate limit configuration missing, using defaults', 'WARN', 'API');
+            return;
+        }
+
+        this.windowSize = config.rate_limit.window_size;
+        this.limit = config.rate_limit.requests_per_second;
+        this.maxClients = config.rate_limit.max_clients;
+        this.enabled = config.rate_limit.enabled;
+        this.cleanupInterval = config.rate_limit.cleanup_interval;
+
+        setInterval(() => this.cleanup(), this.cleanupInterval);
+
+        log(`Rate limiter initialized: ${this.limit} req/s, window: ${this.windowSize}ms, max clients: ${this.maxClients}`, 'INFO', 'API');
+    },
+
+    isAllowed(clientIP) {
+        if (!this.enabled) return true;
+        
+        const now = Date.now();
+        
+        if (this.windows.size > this.maxClients) {
+            this.cleanup();
+        }
+
+        let requests = this.windows.get(clientIP);
+        if (!requests) {
+            if (this.windows.size >= this.maxClients) {
+                log(`Max clients limit reached (${this.maxClients}), rejecting new client: ${clientIP}`, 'WARN', 'API');
+                return false;
+            }
+            requests = [];
+        }
+
+        const windowStart = now - this.windowSize;
+        requests = requests.filter(time => time > windowStart);
+
+        if (requests.length >= this.limit) {
+            this.windows.set(clientIP, requests);
+            return false;
+        }
+
+        requests.push(now);
+        this.windows.set(clientIP, requests);
+        return true;
+    },
+
+    cleanup() {
+        const now = Date.now();
+        const windowStart = now - this.windowSize;
+        let cleaned = 0;
+
+        for (const [ip, requests] of this.windows.entries()) {
+            const validRequests = requests.filter(time => time > windowStart);
+            
+            if (validRequests.length === 0) {
+                this.windows.delete(ip);
+                cleaned++;
+            } else {
+                this.windows.set(ip, validRequests);
+            }
+        }
+
+        if (this.windows.size > this.maxClients) {
+            const entries = [...this.windows.entries()]
+                .sort((a, b) => Math.max(...a[1]) - Math.max(...b[1]));
+            
+            const toDelete = entries.slice(0, entries.length - this.maxClients);
+            toDelete.forEach(([ip]) => this.windows.delete(ip));
+            cleaned += toDelete.length;
+        }
+
+        if (cleaned > 0) {
+            log(`Cleaned up ${cleaned} rate limit records (current clients: ${this.windows.size})`, 'DEBUG', 'API');
+        }
+    },
+
+    getStatus(clientIP) {
+        const requests = this.windows.get(clientIP);
+        if (!requests) return null;
+
+        const now = Date.now();
+        const windowStart = now - this.windowSize;
+        const activeRequests = requests.filter(time => time > windowStart);
+
+        return {
+            requests: activeRequests.length,
+            window: this.windowSize,
+            limit: this.limit,
+            remaining: Math.max(0, this.limit - activeRequests.length),
+            reset: Math.ceil((Math.max(...activeRequests) + this.windowSize - now) / 1000)
+        };
+    }
+};
+
 async function cachedPathExists(filePath) {
     const now = Date.now();
     const cached = fileExistsCache.get(filePath);
     
-    // 如果缓存存在且未过期，直接返回
     if (cached && (now - cached.timestamp) < FILE_CACHE_TTL) {
         return cached.exists;
     }
     
-    // 执行实际的文件系统检查
     const exists = await fs.pathExists(filePath);
     fileExistsCache.set(filePath, { exists, timestamp: now });
     
-    // 定期清理过期缓存，避免内存泄漏
     if (fileExistsCache.size > MAX_FILE_CACHE_SIZE) {
         cleanupFileCache();
     }
@@ -41,7 +142,6 @@ async function cachedPathExists(filePath) {
     return exists;
 }
 
-// 清理过期的文件缓存
 function cleanupFileCache() {
     const now = Date.now();
     let cleanedCount = 0;
@@ -58,104 +158,38 @@ function cleanupFileCache() {
     }
 }
 
-// 请求限流检查
-function checkRateLimit(clientIP) {
-    const now = Date.now();
-    const windowStart = now - WINDOW_SIZE;
-    
-    // 初始化客户端请求记录
-    if (!requestCounts.has(clientIP)) {
-        requestCounts.set(clientIP, []);
-    }
-    
-    const requests = requestCounts.get(clientIP);
-    
-    // 清理过期请求记录
-    const validRequests = requests.filter(time => time > windowStart);
-    requestCounts.set(clientIP, validRequests);
-    
-    // 检查是否超过限制
-    if (validRequests.length >= REQUEST_LIMIT) {
-        return false;
-    }
-    
-    // 记录当前请求
-    validRequests.push(now);
-    
-    // 定期清理客户端记录，防止内存泄漏
-    if (requestCounts.size > MAX_CLIENTS) {
-        cleanupRequestCounts();
-    }
-    
-    return true;
-}
-
-// 清理请求计数器
-function cleanupRequestCounts() {
-    const now = Date.now();
-    const windowStart = now - WINDOW_SIZE;
-    let cleanedCount = 0;
-    
-    for (const [clientIP, requests] of requestCounts.entries()) {
-        const validRequests = requests.filter(time => time > windowStart);
-        if (validRequests.length === 0) {
-            requestCounts.delete(clientIP);
-            cleanedCount++;
-        } else {
-            requestCounts.set(clientIP, validRequests);
-        }
-    }
-    
-    if (cleanedCount > 0) {
-        log(`Cleaned up ${cleanedCount} inactive client rate limit records`, 'DEBUG', 'API');
-    }
-}
-
-// 加载图片列表
 async function loadImageList() {
     try {
         log('Starting to load image list...', 'DEBUG', 'API');
         
-        const listPath = path.join(__dirname, 'list.json');
-        const newImageList = await safeReadJson(listPath, {});
-        
-        const detailsPath = path.join(__dirname, 'images-details.json');
-        let newImageDetails = await safeReadJson(detailsPath, []);
-        
-        // 如果details为空但list不为空，进行转换
+        const [newImageList, newImageDetails] = await Promise.all([
+            safeReadJson(path.join(__dirname, 'list.json'), {}),
+            safeReadJson(path.join(__dirname, 'images-details.json'), [])
+        ]);
+
         if (newImageDetails.length === 0 && Object.keys(newImageList).length > 0) {
-            newImageDetails = convertListToDetails(newImageList);
+            newImageDetails.push(...convertListToDetails(newImageList));
             log(`Converted ${newImageDetails.length} images from list.json format`, 'WARN', 'API');
         }
-        
-        // 原子性更新，避免并发访问时数据不一致
+
         imageList = newImageList;
         imageDetails = newImageDetails;
-        
-        // 清理文件缓存，因为文件列表可能已更改
         fileExistsCache.clear();
         
         log(`Image list loaded: ${Object.keys(imageList).length} directories, ${imageDetails.length} total images`, 'INFO', 'API');
         
     } catch (err) {
         log(`Failed to load image list: ${err.message}`, 'ERROR', 'API');
-        // 不清空现有数据，保持服务可用性
-        if (Object.keys(imageList).length === 0 && imageDetails.length === 0) {
-            imageList = {};
-            imageDetails = [];
-        }
+        log(`Error stack: ${err.stack}`, 'DEBUG', 'API');
     }
 }
 
-// 从 list.json 转换为详细信息格式
 function convertListToDetails(listData) {
     const details = [];
     const baseImagePath = path.resolve(config.paths.images);
     
     for (const [directory, files] of Object.entries(listData)) {
-        if (!files || typeof files !== 'object') {
-            continue;
-        }
+        if (!files || typeof files !== 'object') continue;
         
         for (const [filename, uploadtime] of Object.entries(files)) {
             try {
@@ -165,10 +199,10 @@ function convertListToDetails(listData) {
                 
                 details.push({
                     name: filename,
-                    size: 0, // 大小信息在需要时获取
+                    size: 0,
                     uploadtime,
-                    path: relativePath, // 相对路径，用于拼接URL
-                    _fullPath: fullPath, // 完整文件系统路径
+                    path: relativePath,
+                    _fullPath: fullPath,
                     _directory: directory,
                     _extension: path.extname(filename).toLowerCase(),
                     _mimeType: mimeTypes.lookup(fullPath) || 'application/octet-stream'
@@ -179,11 +213,9 @@ function convertListToDetails(listData) {
         }
     }
     
-    log(`Converted ${details.length} images from ${Object.keys(listData).length} directories`, 'DEBUG', 'API');
     return details;
 }
 
-// 设置CORS头
 function setCorsHeaders(res) {
     if (config.server.cors.enabled) {
         res.setHeader('Access-Control-Allow-Origin', config.server.cors.origins);
@@ -193,7 +225,6 @@ function setCorsHeaders(res) {
     }
 }
 
-// 获取随机图片
 function getRandomImage(directory = null) {
     if (imageDetails.length === 0) {
         log('No images available for random selection', 'DEBUG', 'API');
@@ -202,7 +233,6 @@ function getRandomImage(directory = null) {
     
     let filtered = imageDetails;
     
-    // 如果指定了目录，进行过滤
     if (directory) {
         filtered = imageDetails.filter(img => {
             if (directory === '_root') {
@@ -218,7 +248,6 @@ function getRandomImage(directory = null) {
         }
     }
     
-    // 随机选择
     const randomIndex = Math.floor(Math.random() * filtered.length);
     const selectedImage = filtered[randomIndex];
     
@@ -226,7 +255,6 @@ function getRandomImage(directory = null) {
     return selectedImage;
 }
 
-// 查找特定图片
 function findSpecificImage(directory, filename) {
     const targetPath = path.join(directory, filename).replace(/\\/g, '/');
     
@@ -247,15 +275,13 @@ function findSpecificImage(directory, filename) {
     return found;
 }
 
-// 判断是否为随机请求
 function isRandomRequest(parts) {
     return parts.length < 2;
 }
 
-// 生成缓存键
 function generateCacheKey(req, parts) {
     if (isRandomRequest(parts)) {
-        return null; // 随机请求不缓存
+        return null;
     }
     
     const base = `api:${req.path}`;
@@ -263,7 +289,6 @@ function generateCacheKey(req, parts) {
     return base + suffix;
 }
 
-// 获取客户端IP
 function getClientIP(req) {
     return req.headers['x-forwarded-for']?.split(',')[0] || 
            req.headers['x-real-ip'] || 
@@ -273,30 +298,41 @@ function getClientIP(req) {
            'unknown';
 }
 
-// 处理API请求
+function getNotFoundMessage(parts) {
+    if (parts.length === 0) {
+        return 'No images available';
+    } else if (parts.length === 1) {
+        return `No images found in directory: ${parts[0]}`;
+    } else {
+        return `Image not found: ${parts.join('/')}`;
+    }
+}
+
 async function handleApiRequest(req, res) {
     const startTime = Date.now();
     
-    // 设置CORS头
     setCorsHeaders(res);
     
-    // 处理OPTIONS请求
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
     }
-    
-    // 请求限流检查
+
     const clientIP = getClientIP(req);
-    if (!checkRateLimit(clientIP)) {
+    if (!requestLimiter.isAllowed(clientIP)) {
+        const status = requestLimiter.getStatus(clientIP);
         log(`Rate limit exceeded for client: ${clientIP}`, 'WARN', 'API', req);
+        
         return res.status(429).json({
             error: 'Too Many Requests',
             message: 'Rate limit exceeded. Please slow down your requests.',
-            retryAfter: Math.ceil(WINDOW_SIZE / 1000)
+            retryAfter: status ? status.reset : Math.ceil(requestLimiter.windowSize / 1000),
+            limit: requestLimiter.limit,
+            window: requestLimiter.windowSize / 1000,
+            remaining: status ? status.remaining : 0,
+            clientIP: clientIP
         });
     }
     
-    // 解析请求路径
     const isJson = req.query.json === '1';
     const parts = req.path.split('/').filter(p => p && p.trim());
     parts.shift(); // 移除 'api'
@@ -306,7 +342,6 @@ async function handleApiRequest(req, res) {
     const cleanPath = req.originalUrl.split('?')[0];
     
     try {
-        // 缓存检查（仅限指定文件请求）
         if (!isRandom && cacheKey) {
             const cached = await cacheManager.get(cacheKey);
             if (cached) {
@@ -316,7 +351,6 @@ async function handleApiRequest(req, res) {
                     return res.json(cached);
                 }
                 
-                // 验证缓存的文件是否仍然存在
                 const filePath = cached._fullPath || cached.fullPath || path.resolve(cached.path);
                 if (await cachedPathExists(filePath)) {
                     res.setHeader('Content-Type', mimeTypes.lookup(filePath) || 'image/jpeg');
@@ -324,28 +358,22 @@ async function handleApiRequest(req, res) {
                     res.setHeader('X-Cache', 'HIT');
                     return res.sendFile(filePath);
                 } else {
-                    // 文件不存在，清理缓存
                     await cacheManager.del(cacheKey);
                     log(`Cleared stale cache for missing file: ${cacheKey}`, 'WARN', 'API', req);
                 }
             }
         }
         
-        // 图片选择逻辑
         let selectedImage;
         if (parts.length === 0) {
-            // 全部图片中随机选择
             selectedImage = getRandomImage();
             log(`Random selection from all images (${Date.now() - startTime}ms)`, 'DEBUG', 'API', req);
         } else if (parts.length === 1) {
-            // 指定目录中随机选择
             selectedImage = getRandomImage(parts[0]);
             log(`Random selection from directory: ${parts[0]} (${Date.now() - startTime}ms)`, 'DEBUG', 'API', req);
         } else {
-            // 查找特定图片
             selectedImage = findSpecificImage(parts[0], parts.slice(1).join('/'));
             if (selectedImage) {
-                // 验证文件是否存在
                 const exists = await cachedPathExists(selectedImage._fullPath);
                 if (!exists) {
                     log(`Specific image file not found: ${selectedImage._fullPath}`, 'WARN', 'API', req);
@@ -356,7 +384,6 @@ async function handleApiRequest(req, res) {
             }
         }
         
-        // 图片未找到
         if (!selectedImage) {
             const processingTime = Date.now() - startTime;
             log(`Image not found (${processingTime}ms)`, 'WARN', 'API', req);
@@ -369,7 +396,6 @@ async function handleApiRequest(req, res) {
             });
         }
         
-        // 构建响应数据
         const imagePath = selectedImage._fullPath;
         const webPath = '/api/' + selectedImage.path;
         
@@ -381,7 +407,6 @@ async function handleApiRequest(req, res) {
             processingTime: Date.now() - startTime
         };
         
-        // 写入缓存（仅限特定图片请求）
         if (!isRandom && cacheKey) {
             const cacheData = {
                 ...imageInfo,
@@ -397,13 +422,11 @@ async function handleApiRequest(req, res) {
             }
         }
         
-        // JSON响应
         if (isJson) {
             log(`JSON response returned (${imageInfo.processingTime}ms)`, 'DEBUG', 'API', req);
             return res.json(imageInfo);
         }
         
-        // 文件响应
         const mimeType = selectedImage._mimeType || mimeTypes.lookup(imagePath) || 'image/jpeg';
         
         res.setHeader('Content-Type', mimeType);
@@ -434,70 +457,30 @@ async function handleApiRequest(req, res) {
     }
 }
 
-// 生成404错误消息
-function getNotFoundMessage(parts) {
-    if (parts.length === 0) {
-        return 'No images available';
-    } else if (parts.length === 1) {
-        return `No images found in directory: ${parts[0]}`;
-    } else {
-        return `Image not found: ${parts.join('/')}`;
-    }
-}
-
-// 获取API统计信息
-function getApiStats() {
-    return {
-        images: {
-            total: imageDetails.length,
-            directories: Object.keys(imageList).length
-        },
-        cache: cacheManager.getStatus(),
-        performance: {
-            fileExistsCacheSize: fileExistsCache.size,
-            rateLimitClientsTracked: requestCounts.size,
-            fileCacheTTL: FILE_CACHE_TTL / 1000 + 's',
-            requestLimit: REQUEST_LIMIT + '/s'
-        },
-        caching: {
-            randomRequestsCached: false,
-            specificImagesCached: true,
-            description: 'Only specific image requests are cached to ensure proper randomization'
-        }
-    };
-}
-
-// 清理函数，定期调用以防止内存泄漏
-function performMaintenance() {
-    cleanupFileCache();
-    cleanupRequestCounts();
-    log('Performed maintenance cleanup', 'DEBUG', 'API');
-}
-
-// 启动API服务
 async function start(appConfig, cacheMgr) {
     try {
         config = appConfig;
         cacheManager = cacheMgr;
         
-        // 设置工作进程ID
         process.env.WORKER_ID = process.env.WORKER_ID ||
             (require('cluster').worker ? require('cluster').worker.id : '1');
         
-        // 初始加载图片列表
         await loadImageList();
         
-        // 定时重新加载图片列表（降低频率到5分钟）
+        // 初始化限流器
+        requestLimiter.initialize(config);
+        
+        // 定时重新加载图片列表（5分钟）
         const reloadInterval = setInterval(async () => {
             try {
                 await loadImageList();
             } catch (err) {
                 log(`Scheduled reload failed: ${err.message}`, 'ERROR', 'API');
             }
-        }, 300000); // 5分钟
+        }, 300000);
         
-        // 定时维护清理（每10分钟）
-        const maintenanceInterval = setInterval(performMaintenance, 600000);
+        // 定时维护清理（10分钟）
+        const maintenanceInterval = setInterval(cleanupFileCache, 600000);
         
         // 优雅关闭时清理定时器
         const originalExit = process.exit;
@@ -509,13 +492,28 @@ async function start(appConfig, cacheMgr) {
         
         log(`API started with ${imageDetails.length} images`, 'INFO', 'API');
         log('Cache policy: random ⛔, specific ✅', 'INFO', 'API');
-        log(`File exists cache TTL: ${FILE_CACHE_TTL/1000}s, Request limit: ${REQUEST_LIMIT}/s`, 'INFO', 'API');
+        log(`File exists cache TTL: ${FILE_CACHE_TTL/1000}s, Request limit: ${requestLimiter.limit}/s`, 'INFO', 'API');
         
         return {
             handleApiRequest,
             loadImageList,
-            getApiStats,
-            performMaintenance
+            getApiStats: () => ({
+                images: {
+                    total: imageDetails.length,
+                    directories: Object.keys(imageList).length
+                },
+                cache: cacheManager.getStatus(),
+                rateLimiter: {
+                    enabled: requestLimiter.enabled,
+                    limit: requestLimiter.limit,
+                    windowSize: requestLimiter.windowSize,
+                    currentClients: requestLimiter.windows.size
+                },
+                fileCache: {
+                    size: fileExistsCache.size,
+                    ttl: FILE_CACHE_TTL / 1000 + 's'
+                }
+            })
         };
         
     } catch (err) {

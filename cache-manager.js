@@ -3,21 +3,21 @@ const { log } = require('./utils');
 
 class CacheManager {
     constructor() {
-        this.redisClient = null;
         this.mapCache = new Map();
         this.mapCacheTTL = new Map();
-        this.isRedisConnected = false;
+        this.accessCount = new Map();
+        this.redisClient = null;
         this.config = null;
+        this.isRedisConnected = false;
         this.retryCount = 0;
         this.maxRetries = 5;
         this.retryInterval = 8000;
         this.retryTimeout = null;
         this.cleanupInterval = null;
-        this.isReconnecting = false; // 防止重复重连
-        this.connectionAttemptTime = null; // 记录连接尝试时间
+        this.isReconnecting = false;
+        this.connectionAttemptTime = null;
     }
 
-    // 初始化缓存管理器
     async initialize(config) {
         this.config = config;
         this.maxRetries = config.redis.reconnect.maxRetries || 5;
@@ -28,34 +28,26 @@ class CacheManager {
             return;
         }
         
-        // 启动Map缓存清理定时器
         this.startMapCacheCleanup();
-        
-        // 尝试连接Redis
         await this.connectRedis();
     }
 
-    // 启动Map缓存清理
     startMapCacheCleanup() {
         const interval = this.config.cache.map_cleanup_interval || 60000;
         this.cleanupInterval = setInterval(() => this.cleanExpiredMapCache(), interval);
         log(`Map cache cleanup started with ${interval}ms interval`, 'DEBUG', 'CACHE');
     }
 
-    // 连接Redis
     async connectRedis() {
         if (!this.config.cache.enabled) {
-            log('Redis disabled, using Map cache', 'INFO', 'CACHE');
             return;
         }
 
-        // 防止并发重连
         if (this.isReconnecting) {
             log('Redis reconnection already in progress, skipping', 'DEBUG', 'CACHE');
             return;
         }
 
-        // 检查重试次数
         if (this.retryCount >= this.maxRetries) {
             log('Max Redis reconnection attempts reached, using Map cache permanently', 'ERROR', 'CACHE');
             return;
@@ -67,7 +59,6 @@ class CacheManager {
         try {
             log(`Attempting to connect to Redis (attempt ${this.retryCount + 1}/${this.maxRetries + 1})`, 'INFO', 'CACHE');
             
-            // 清理之前的客户端
             if (this.redisClient) {
                 try {
                     await this.redisClient.disconnect();
@@ -83,21 +74,19 @@ class CacheManager {
                     port: this.config.redis.port,
                     connectTimeout: this.config.redis.reconnect.connectTimeout || 10000,
                     lazyConnect: true,
-                    reconnectStrategy: false // 禁用自动重连，我们手动控制
+                    reconnectStrategy: false
                 },
                 password: this.config.redis.password || undefined,
                 database: this.config.redis.db
             });
 
-            // Redis事件监听
             this.redisClient.on('connect', () => {
                 log('Redis connected successfully', 'INFO', 'CACHE');
                 this.isRedisConnected = true;
-                this.retryCount = 0; // 重置重试次数
+                this.retryCount = 0;
                 this.isReconnecting = false;
                 this.clearMapCache();
                 
-                // 清除重连定时器
                 if (this.retryTimeout) {
                     clearTimeout(this.retryTimeout);
                     this.retryTimeout = null;
@@ -117,11 +106,6 @@ class CacheManager {
                 this.scheduleReconnect();
             });
 
-            this.redisClient.on('reconnecting', () => {
-                log('Redis client reconnecting...', 'WARN', 'CACHE');
-            });
-
-            // 尝试连接
             await this.redisClient.connect();
             
         } catch (error) {
@@ -131,11 +115,9 @@ class CacheManager {
         }
     }
 
-    // 处理Redis错误
     handleRedisError() {
         this.isRedisConnected = false;
         
-        // 清理客户端
         if (this.redisClient) {
             try {
                 this.redisClient.removeAllListeners();
@@ -150,9 +132,7 @@ class CacheManager {
         this.scheduleReconnect();
     }
 
-    // 安排重连
     scheduleReconnect() {
-        // 如果已经在重连中或达到最大重试次数，不再安排重连
         if (this.isReconnecting || this.retryCount >= this.maxRetries) {
             if (this.retryCount >= this.maxRetries) {
                 log('Max Redis reconnection attempts reached', 'ERROR', 'CACHE');
@@ -160,7 +140,6 @@ class CacheManager {
             return;
         }
 
-        // 如果已有重连定时器，清除它
         if (this.retryTimeout) {
             clearTimeout(this.retryTimeout);
         }
@@ -175,41 +154,49 @@ class CacheManager {
         log(`Redis reconnection scheduled in ${this.retryInterval/1000}s (attempt ${this.retryCount + 1}/${this.maxRetries + 1})`, 'WARN', 'CACHE');
     }
 
-    // 清理过期的Map缓存
     cleanExpiredMapCache() {
         const now = Date.now();
-        let cleaned = 0;
+        const entries = [...this.mapCacheTTL.entries()];
+        const expired = entries.filter(([key, expireTime]) => now > expireTime);
         
-        for (const [key, expireTime] of this.mapCacheTTL.entries()) {
-            if (now > expireTime) {
+        if (expired.length > 0) {
+            expired.forEach(([key]) => {
                 this.mapCache.delete(key);
                 this.mapCacheTTL.delete(key);
-                cleaned++;
-            }
+                this.accessCount.delete(key);
+            });
+            log(`Cleaned ${expired.length} expired Map cache entries`, 'DEBUG', 'CACHE');
         }
-        
-        if (cleaned > 0) {
-            log(`Cleaned ${cleaned} expired Map cache entries`, 'DEBUG', 'CACHE');
+
+        // 如果缓存过大，清理最少访问的条目
+        if (this.mapCache.size > 10000) { // 可以根据需要调整这个限制
+            const entries = [...this.accessCount.entries()];
+            entries.sort((a, b) => a[1] - b[1]);
+            const toDelete = entries.slice(0, entries.length - 5000); // 保留5000个最常访问的条目
+            toDelete.forEach(([key]) => {
+                this.mapCache.delete(key);
+                this.mapCacheTTL.delete(key);
+                this.accessCount.delete(key);
+            });
+            log(`Cleaned ${toDelete.length} least accessed cache entries`, 'INFO', 'CACHE');
         }
     }
 
-    // 清空Map缓存
     clearMapCache() {
         const size = this.mapCache.size;
         this.mapCache.clear();
         this.mapCacheTTL.clear();
+        this.accessCount.clear();
         if (size > 0) {
             log(`Map cache cleared (${size} entries)`, 'INFO', 'CACHE');
         }
     }
 
-    // 获取缓存
     async get(key) {
         if (!this.config.cache.enabled) {
             return null;
         }
 
-        // 优先使用Redis（只有在真正连接时才尝试）
         if (this.isRedisConnected && this.redisClient && !this.isReconnecting) {
             try {
                 const result = await this.redisClient.get(key);
@@ -223,15 +210,17 @@ class CacheManager {
             }
         }
 
-        // 使用Map缓存
-        if (this.mapCache.has(key)) {
+        const cached = this.mapCache.get(key);
+        if (cached) {
             const expireTime = this.mapCacheTTL.get(key);
             if (!expireTime || Date.now() < expireTime) {
+                this.accessCount.set(key, (this.accessCount.get(key) || 0) + 1);
                 log(`Map cache hit: ${key}`, 'DEBUG', 'CACHE');
-                return this.mapCache.get(key);
+                return cached;
             } else {
                 this.mapCache.delete(key);
                 this.mapCacheTTL.delete(key);
+                this.accessCount.delete(key);
                 log(`Map cache expired: ${key}`, 'DEBUG', 'CACHE');
             }
         }
@@ -240,7 +229,6 @@ class CacheManager {
         return null;
     }
 
-    // 设置缓存
     async set(key, value, ttl = null) {
         if (!this.config.cache.enabled) {
             return;
@@ -253,7 +241,6 @@ class CacheManager {
             return;
         }
 
-        // 优先使用Redis（只有在真正连接时才尝试）
         if (this.isRedisConnected && this.redisClient && !this.isReconnecting) {
             try {
                 await this.redisClient.setEx(key, redisTTL, JSON.stringify(value));
@@ -265,16 +252,15 @@ class CacheManager {
             }
         }
 
-        // 使用Map缓存
         this.mapCache.set(key, value);
         this.mapCacheTTL.set(key, Date.now() + (cacheTTL * 1000));
+        this.accessCount.set(key, 0);
         log(`Map cache set: ${key} (TTL: ${cacheTTL}s)`, 'DEBUG', 'CACHE');
     }
 
-    // 删除缓存
     async del(key) {
         if (!this.config.cache.enabled) {
-            return;
+            return false;
         }
 
         let deleted = false;
@@ -290,49 +276,16 @@ class CacheManager {
             }
         }
 
-        const mapDeleted = this.mapCache.delete(key);
-        this.mapCacheTTL.delete(key);
-        
-        if (mapDeleted) {
-            log(`Map cache deleted: ${key}`, 'DEBUG', 'CACHE');
+        if (this.mapCache.delete(key)) {
+            this.mapCacheTTL.delete(key);
+            this.accessCount.delete(key);
             deleted = true;
+            log(`Map cache deleted: ${key}`, 'DEBUG', 'CACHE');
         }
 
         return deleted;
     }
 
-    // 检查Redis TTL
-    async getTTL(key) {
-        if (!this.config.cache.enabled || !this.isRedisConnected || !this.redisClient || this.isReconnecting) {
-            return -1;
-        }
-
-        try {
-            const ttl = await this.redisClient.ttl(key);
-            return ttl;
-        } catch (error) {
-            log(`Redis TTL error: ${error.message}`, 'ERROR', 'CACHE');
-            return -1;
-        }
-    }
-
-    // 设置Redis过期时间
-    async expire(key, seconds) {
-        if (!this.config.cache.enabled || !this.isRedisConnected || !this.redisClient || this.isReconnecting) {
-            return false;
-        }
-
-        try {
-            const result = await this.redisClient.expire(key, seconds);
-            log(`Redis expire set: ${key} (${seconds}s)`, 'DEBUG', 'CACHE');
-            return result;
-        } catch (error) {
-            log(`Redis expire error: ${error.message}`, 'ERROR', 'CACHE');
-            return false;
-        }
-    }
-
-    // 清空所有缓存
     async clear() {
         if (!this.config.cache.enabled) {
             return;
@@ -351,96 +304,20 @@ class CacheManager {
         this.clearMapCache();
     }
 
-    // 手动重置重连计数器（用于管理接口）
-    resetRetryCount() {
-        this.retryCount = 0;
-        this.isReconnecting = false;
-        if (this.retryTimeout) {
-            clearTimeout(this.retryTimeout);
-            this.retryTimeout = null;
-        }
-        log('Redis retry count reset', 'INFO', 'CACHE');
-    }
-
-    // 手动触发重连（用于管理接口）
-    async manualReconnect() {
-        log('Manual Redis reconnection triggered', 'INFO', 'CACHE');
-        this.resetRetryCount();
-        await this.connectRedis();
-    }
-
-    // 获取缓存统计信息
-    async getStats() {
-        const stats = {
-            redis: {
-                connected: this.isRedisConnected,
-                retryCount: this.retryCount,
-                maxRetries: this.maxRetries,
-                isReconnecting: this.isReconnecting,
-                connectionAttemptTime: this.connectionAttemptTime,
-                nextRetryIn: this.retryTimeout ? Math.ceil((this.retryInterval - (Date.now() - (this.connectionAttemptTime || 0))) / 1000) : null
-            },
-            map: {
-                size: this.mapCache.size,
-                ttlSize: this.mapCacheTTL.size
-            },
-            enabled: this.config ? this.config.cache.enabled : false,
-            config: this.config ? {
-                ttl: this.config.cache.ttl,
-                redis_ttl: this.config.cache.redis_ttl || this.config.cache.ttl,
-                cleanup_interval: this.config.cache.map_cleanup_interval
-            } : null
-        };
-
-        if (this.isRedisConnected && this.redisClient && !this.isReconnecting) {
-            try {
-                const info = await this.redisClient.info('memory');
-                const dbsize = await this.redisClient.dbSize();
-                stats.redis.memory = info;
-                stats.redis.dbsize = dbsize;
-            } catch (error) {
-                log(`Error getting Redis stats: ${error.message}`, 'ERROR', 'CACHE');
-            }
-        }
-
-        return stats;
-    }
-
-    // 获取缓存状态
-    getStatus() {
-        return {
-            redis: {
-                connected: this.isRedisConnected,
-                retryCount: this.retryCount,
-                maxRetries: this.maxRetries,
-                isReconnecting: this.isReconnecting
-            },
-            map: {
-                size: this.mapCache.size,
-                ttlSize: this.mapCacheTTL.size
-            },
-            enabled: this.config ? this.config.cache.enabled : false
-        };
-    }
-
-    // 关闭连接
     async close() {
         log('Closing cache manager...', 'INFO', 'CACHE');
         
-        // 清除重连定时器
         if (this.retryTimeout) {
             clearTimeout(this.retryTimeout);
             this.retryTimeout = null;
         }
         
-        // 停止清理定时器
         if (this.cleanupInterval) {
             clearInterval(this.cleanupInterval);
             this.cleanupInterval = null;
             log('Map cache cleanup stopped', 'INFO', 'CACHE');
         }
         
-        // 关闭Redis连接
         if (this.redisClient) {
             try {
                 this.redisClient.removeAllListeners();
@@ -456,16 +333,53 @@ class CacheManager {
             this.redisClient = null;
         }
         
-        // 清空状态
         this.isRedisConnected = false;
         this.isReconnecting = false;
         this.retryCount = 0;
         
-        // 清空Map缓存
         this.clearMapCache();
         log('Cache manager closed', 'INFO', 'CACHE');
     }
+
+    getStatus() {
+        return {
+            redis: {
+                connected: this.isRedisConnected,
+                retryCount: this.retryCount,
+                maxRetries: this.maxRetries,
+                isReconnecting: this.isReconnecting,
+                nextRetryIn: this.retryTimeout ? 
+                    Math.ceil((this.retryInterval - (Date.now() - (this.connectionAttemptTime || 0))) / 1000) : null
+            },
+            map: {
+                size: this.mapCache.size,
+                ttlSize: this.mapCacheTTL.size,
+                accessCountSize: this.accessCount.size
+            },
+            enabled: this.config ? this.config.cache.enabled : false,
+            config: this.config ? {
+                ttl: this.config.cache.ttl,
+                redis_ttl: this.config.cache.redis_ttl,
+                cleanup_interval: this.config.cache.map_cleanup_interval
+            } : null
+        };
+    }
+
+    resetRetryCount() {
+        this.retryCount = 0;
+        this.isReconnecting = false;
+        if (this.retryTimeout) {
+            clearTimeout(this.retryTimeout);
+            this.retryTimeout = null;
+        }
+        log('Redis retry count reset', 'INFO', 'CACHE');
+    }
+
+    async manualReconnect() {
+        log('Manual Redis reconnection triggered', 'INFO', 'CACHE');
+        this.resetRetryCount();
+        await this.connectRedis();
+    }
 }
 
-const cacheManager = new CacheManager();
-module.exports = cacheManager;
+module.exports = new CacheManager();

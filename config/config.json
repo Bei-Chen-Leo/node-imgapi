@@ -40,6 +40,13 @@
     "redis_ttl": 7200,
     "map_cleanup_interval": 60000
   },
+  "rate_limit": {
+    "enabled": true,
+    "requests_per_second": 1,
+    "window_size": 1000,
+    "max_clients": 50,
+    "cleanup_interval": 60000
+  },
   "timezone": "Asia/Shanghai",
   "logging": {
     "enabled": true,
@@ -49,6 +56,10 @@
       "WARN": 1,
       "INFO": 2,
       "DEBUG": 3
+    },
+    "buffer": {
+      "size": 1000,
+      "flush_interval": 5000
     }
   }
 }

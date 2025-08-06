@@ -2,12 +2,6 @@ const fs = require('fs-extra');
 
 let config = null;
 
-// 设置配置
-function setConfig(appConfig) {
-    config = appConfig;
-}
-
-// 日志等级映射
 const LOG_LEVELS = {
     'ERROR': 0,
     'WARN': 1,
@@ -15,7 +9,10 @@ const LOG_LEVELS = {
     'DEBUG': 3
 };
 
-// 格式化时间到指定时区
+function setConfig(appConfig) {
+    config = appConfig;
+}
+
 function formatTime(date = new Date(), timezone = 'Asia/Shanghai') {
     try {
         const targetTimezone = config?.timezone || timezone;
@@ -53,7 +50,6 @@ function formatTime(date = new Date(), timezone = 'Asia/Shanghai') {
     }
 }
 
-// 通用日志函数
 function log(message, type = 'INFO', module = 'APP', req = null) {
     if (!config || !config.logging.enabled) {
         return;
@@ -82,7 +78,14 @@ function log(message, type = 'INFO', module = 'APP', req = null) {
     console.log(logMessage);
 }
 
-// 安全读取JSON文件
+function getCurrentTimestamp() {
+    return formatTime();
+}
+
+function isoToLocal(isoString) {
+    return formatTime(new Date(isoString));
+}
+
 async function safeReadJson(filePath, defaultValue = null) {
     try {
         if (!(await fs.pathExists(filePath))) {
@@ -90,15 +93,9 @@ async function safeReadJson(filePath, defaultValue = null) {
             return defaultValue;
         }
         
-        const stats = await fs.stat(filePath);
-        if (stats.size === 0) {
-            log(`JSON file is empty: ${filePath}`, 'WARN', 'UTILS');
-            return defaultValue;
-        }
-        
         const content = await fs.readFile(filePath, 'utf-8');
         if (!content || content.trim().length === 0) {
-            log(`JSON file has no content: ${filePath}`, 'WARN', 'UTILS');
+            log(`JSON file is empty: ${filePath}`, 'WARN', 'UTILS');
             return defaultValue;
         }
         
@@ -112,7 +109,6 @@ async function safeReadJson(filePath, defaultValue = null) {
     }
 }
 
-// 安全写入JSON文件（带锁机制）
 async function safeWriteJson(filePath, data, options = {}) {
     const lockFile = `${filePath}.lock`;
     const tempFile = `${filePath}.tmp`;
@@ -121,23 +117,18 @@ async function safeWriteJson(filePath, data, options = {}) {
     
     for (let i = 0; i < maxRetries; i++) {
         try {
-            // 检查锁文件
             if (await fs.pathExists(lockFile)) {
                 log(`JSON file is locked, waiting... (attempt ${i + 1})`, 'DEBUG', 'UTILS');
                 await new Promise(resolve => setTimeout(resolve, retryDelay));
                 continue;
             }
             
-            // 创建锁文件
             await fs.writeFile(lockFile, process.pid.toString());
             
-            // 写入临时文件
             await fs.writeJson(tempFile, data, { spaces: 2, ...options });
             
-            // 原子性移动
             await fs.move(tempFile, filePath, { overwrite: true });
             
-            // 删除锁文件
             await fs.unlink(lockFile);
             
             log(`Successfully wrote JSON file: ${filePath}`, 'DEBUG', 'UTILS');
@@ -146,7 +137,6 @@ async function safeWriteJson(filePath, data, options = {}) {
         } catch (error) {
             log(`Error writing JSON file ${filePath} (attempt ${i + 1}): ${error.message}`, 'ERROR', 'UTILS');
             
-            // 清理临时文件和锁文件
             try {
                 if (await fs.pathExists(tempFile)) {
                     await fs.unlink(tempFile);
@@ -167,16 +157,6 @@ async function safeWriteJson(filePath, data, options = {}) {
     }
     
     return false;
-}
-
-// 获取当前时间戳（格式化）
-function getCurrentTimestamp() {
-    return formatTime();
-}
-
-// ISO时间转换为本地时区格式
-function isoToLocal(isoString) {
-    return formatTime(new Date(isoString));
 }
 
 module.exports = {
