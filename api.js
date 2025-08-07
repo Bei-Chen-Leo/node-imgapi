@@ -1,7 +1,8 @@
 /**
  * @file API Service
  * @author Bei-Chen-Leo
- * @date 2025-08-06 14:57:39
+ * @date 2025-08-06 15:47:11
+ * @lastModifiedBy 114514-lang
  */
 
 const fs = require('fs-extra');
@@ -21,31 +22,104 @@ const MAX_FILE_CACHE_SIZE = 10000;
 
 // 限流器实现
 const requestLimiter = {
-    windows: new Map(),
-    windowSize: 1000,
-    limit: 1,
-    maxClients: 50,
-    enabled: true,
-    cleanupInterval: 60000,
+    windows: new Map(),        // 请求计数窗口
+    banList: new Map(),        // 封禁列表
+    windowSize: 60000,         // 1分钟窗口
+    limit: 60,                 // 每分钟请求数
+    maxClients: 100,          // 最大客户端数
+    enabled: true,            // 是否启用
+    cleanupInterval: 60000,   // 清理间隔（1分钟）
+    banDuration: 10000,       // 封禁时长（测试用10秒）
 
     initialize(config) {
+        // 设置默认值
+        const defaults = {
+            window_size: 60000,           // 1分钟窗口
+            requests_per_minute: 60,      // 每分钟请求数
+            max_clients: 100,             // 最大客户端数
+            enabled: true,                // 启用限流
+            cleanup_interval: 60000,      // 清理间隔
+            ban_duration: 10000           // 封禁时长（测试用10秒）
+        };
+
+        // 如果没有配置，使用默认值
         if (!config.rate_limit) {
             log('Rate limit configuration missing, using defaults', 'WARN', 'API');
+            config.rate_limit = defaults;
+        }
+
+        // 合并配置，确保所有字段都有值
+        this.windowSize = config.rate_limit.window_size || defaults.window_size;
+        this.limit = config.rate_limit.requests_per_minute || defaults.requests_per_minute;
+        this.maxClients = config.rate_limit.max_clients || defaults.max_clients;
+        this.enabled = config.rate_limit.enabled !== undefined ? config.rate_limit.enabled : defaults.enabled;
+        this.cleanupInterval = config.rate_limit.cleanup_interval || defaults.cleanup_interval;
+        this.banDuration = config.rate_limit.ban_duration || defaults.ban_duration;
+
+        // 启动清理定时器
+        setInterval(() => this.cleanup(), this.cleanupInterval);
+
+        log(`Rate limiter initialized: ${this.limit} req/min, window: ${this.windowSize}ms, max clients: ${this.maxClients}, ban duration: ${this.banDuration}ms`, 'INFO', 'API');
+    },
+
+    isBanned(clientIP) {
+        const banInfo = this.banList.get(clientIP);
+        if (!banInfo) return false;
+
+        const now = Date.now();
+        if (now >= banInfo.endTime) {
+            this.banList.delete(clientIP);
+            // 重要：解封时清除该IP的请求记录
+            this.windows.delete(clientIP);
+            log(`Ban expired for client: ${clientIP}, clearing request history`, 'INFO', 'API');
+            return false;
+        }
+
+        return true;
+    },
+
+    getBanStatus(clientIP) {
+        const banInfo = this.banList.get(clientIP);
+        if (!banInfo) return null;
+
+        const now = Date.now();
+        if (now >= banInfo.endTime) {
+            this.banList.delete(clientIP);
+            this.windows.delete(clientIP);
+            return null;
+        }
+
+        return {
+            remainingTime: Math.ceil((banInfo.endTime - now) / 1000), // 剩余秒数
+            banEndTime: new Date(banInfo.endTime).toISOString(),
+            reason: banInfo.reason
+        };
+    },
+
+    banClient(clientIP, reason = 'Rate limit exceeded') {
+        // 如果已经被封禁，不要更新封禁时间
+        if (this.banList.has(clientIP)) {
+            log(`Client ${clientIP} is already banned, skipping new ban`, 'DEBUG', 'API');
             return;
         }
 
-        this.windowSize = config.rate_limit.window_size;
-        this.limit = config.rate_limit.requests_per_second;
-        this.maxClients = config.rate_limit.max_clients;
-        this.enabled = config.rate_limit.enabled;
-        this.cleanupInterval = config.rate_limit.cleanup_interval;
-
-        setInterval(() => this.cleanup(), this.cleanupInterval);
-
-        log(`Rate limiter initialized: ${this.limit} req/s, window: ${this.windowSize}ms, max clients: ${this.maxClients}`, 'INFO', 'API');
+        const now = Date.now();
+        this.banList.set(clientIP, {
+            startTime: now,
+            endTime: now + this.banDuration,
+            reason: reason
+        });
+        log(`Client banned: ${clientIP} (${reason}) for ${this.banDuration/1000} seconds`, 'WARN', 'API');
     },
 
     isAllowed(clientIP) {
+        // 首先检查是否被封禁
+        if (this.isBanned(clientIP)) {
+            const banStatus = this.getBanStatus(clientIP);
+            log(`Request rejected - client is banned: ${clientIP}, remaining time: ${banStatus.remainingTime}s`, 'DEBUG', 'API');
+            return false;
+        }
+
         if (!this.enabled) return true;
         
         const now = Date.now();
@@ -66,8 +140,14 @@ const requestLimiter = {
         const windowStart = now - this.windowSize;
         requests = requests.filter(time => time > windowStart);
 
+        // 记录调试信息
+        log(`Rate limit check for ${clientIP}: ${requests.length}/${this.limit} requests in current window`, 'DEBUG', 'API');
+
         if (requests.length >= this.limit) {
-            this.windows.set(clientIP, requests);
+            // 重要：在封禁前清除该IP的请求记录，这样解封后从0开始计数
+            this.windows.delete(clientIP);
+            // 触发临时封禁
+            this.banClient(clientIP);
             return false;
         }
 
@@ -81,6 +161,7 @@ const requestLimiter = {
         const windowStart = now - this.windowSize;
         let cleaned = 0;
 
+        // 清理请求记录
         for (const [ip, requests] of this.windows.entries()) {
             const validRequests = requests.filter(time => time > windowStart);
             
@@ -89,6 +170,16 @@ const requestLimiter = {
                 cleaned++;
             } else {
                 this.windows.set(ip, validRequests);
+            }
+        }
+
+        // 清理过期的封禁记录
+        for (const [ip, banInfo] of this.banList.entries()) {
+            if (now >= banInfo.endTime) {
+                this.banList.delete(ip);
+                this.windows.delete(ip);
+                cleaned++;
+                log(`Ban expired and removed for client: ${ip}`, 'DEBUG', 'API');
             }
         }
 
@@ -102,11 +193,20 @@ const requestLimiter = {
         }
 
         if (cleaned > 0) {
-            log(`Cleaned up ${cleaned} rate limit records (current clients: ${this.windows.size})`, 'DEBUG', 'API');
+            log(`Cleaned up ${cleaned} rate limit and ban records (current clients: ${this.windows.size})`, 'DEBUG', 'API');
         }
     },
 
     getStatus(clientIP) {
+        // 先检查是否被封禁
+        const banStatus = this.getBanStatus(clientIP);
+        if (banStatus) {
+            return {
+                banned: true,
+                ...banStatus
+            };
+        }
+
         const requests = this.windows.get(clientIP);
         if (!requests) return null;
 
@@ -115,15 +215,17 @@ const requestLimiter = {
         const activeRequests = requests.filter(time => time > windowStart);
 
         return {
+            banned: false,
             requests: activeRequests.length,
             window: this.windowSize,
             limit: this.limit,
             remaining: Math.max(0, this.limit - activeRequests.length),
-            reset: Math.ceil((Math.max(...activeRequests) + this.windowSize - now) / 1000)
+            reset: Math.ceil((Math.max(...activeRequests || [now]) + this.windowSize - now) / 1000)
         };
     }
 };
 
+// Cache functions
 async function cachedPathExists(filePath) {
     const now = Date.now();
     const cached = fileExistsCache.get(filePath);
@@ -184,6 +286,7 @@ async function loadImageList() {
     }
 }
 
+// Helper functions
 function convertListToDetails(listData) {
     const details = [];
     const baseImagePath = path.resolve(config.paths.images);
@@ -308,6 +411,7 @@ function getNotFoundMessage(parts) {
     }
 }
 
+// API request handler
 async function handleApiRequest(req, res) {
     const startTime = Date.now();
     
@@ -320,19 +424,22 @@ async function handleApiRequest(req, res) {
     const clientIP = getClientIP(req);
     if (!requestLimiter.isAllowed(clientIP)) {
         const status = requestLimiter.getStatus(clientIP);
-        log(`Rate limit exceeded for client: ${clientIP}`, 'WARN', 'API', req);
+        log(`Rate limit exceeded or banned client: ${clientIP}`, 'WARN', 'API', req);
         
-        return res.status(429).json({
-            error: 'Too Many Requests',
-            message: 'Rate limit exceeded. Please slow down your requests.',
-            retryAfter: status ? status.reset : Math.ceil(requestLimiter.windowSize / 1000),
+        const responseData = {
+            error: status.banned ? 'Temporarily Banned' : 'Too Many Requests',
+            message: status.banned 
+                ? `You have been temporarily banned. Please try again later.` 
+                : 'Rate limit exceeded. Please slow down your requests.',
+            clientIP: clientIP,
             limit: requestLimiter.limit,
-            window: requestLimiter.windowSize / 1000,
-            remaining: status ? status.remaining : 0,
-            clientIP: clientIP
-        });
+            window: requestLimiter.windowSize / 1000,  // 转换为秒
+            ...status
+        };
+
+        return res.status(status.banned ? 403 : 429).json(responseData);
     }
-    
+
     const isJson = req.query.json === '1';
     const parts = req.path.split('/').filter(p => p && p.trim());
     parts.shift(); // 移除 'api'
@@ -457,6 +564,7 @@ async function handleApiRequest(req, res) {
     }
 }
 
+// Module initialization
 async function start(appConfig, cacheMgr) {
     try {
         config = appConfig;
@@ -492,7 +600,7 @@ async function start(appConfig, cacheMgr) {
         
         log(`API started with ${imageDetails.length} images`, 'INFO', 'API');
         log('Cache policy: random ⛔, specific ✅', 'INFO', 'API');
-        log(`File exists cache TTL: ${FILE_CACHE_TTL/1000}s, Request limit: ${requestLimiter.limit}/s`, 'INFO', 'API');
+        log(`File exists cache TTL: ${FILE_CACHE_TTL/1000}s, Request limit: ${requestLimiter.limit}/min`, 'INFO', 'API');
         
         return {
             handleApiRequest,
@@ -507,7 +615,8 @@ async function start(appConfig, cacheMgr) {
                     enabled: requestLimiter.enabled,
                     limit: requestLimiter.limit,
                     windowSize: requestLimiter.windowSize,
-                    currentClients: requestLimiter.windows.size
+                    currentClients: requestLimiter.windows.size,
+                    bannedClients: requestLimiter.banList.size
                 },
                 fileCache: {
                     size: fileExistsCache.size,

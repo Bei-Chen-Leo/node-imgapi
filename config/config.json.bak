@@ -31,7 +31,7 @@
     "html": "./public"
   },
   "update": {
-    "hours": -1,
+    "hours": 24,
     "supportedExtensions": [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"]
   },
   "cache": {
@@ -41,12 +41,13 @@
     "map_cleanup_interval": 60000
   },
   "rate_limit": {
-    "enabled": true,
-    "requests_per_second": 1,
-    "window_size": 1000,
-    "max_clients": 1000,
-    "cleanup_interval": 60000
-  },
+    "enabled": false,
+    "window_size": 60000,        
+    "requests_per_minute": 20,     
+    "max_clients": 100,            
+    "cleanup_interval": 60000,     
+    "ban_duration": 300000
+},
   "timezone": "Asia/Shanghai",
   "logging": {
     "enabled": true,

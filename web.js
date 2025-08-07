@@ -103,6 +103,8 @@ async function start(appConfig, cacheManagerInstance) {
         log(`Static files served from: ${config.paths.html}`, 'INFO', 'WEB');
     }
     
+    // =================== 1. 具体路由定义 ===================
+    
     // 根路径API文档
     app.get('/doc', (req, res) => {
         res.json({
@@ -323,21 +325,47 @@ async function start(appConfig, cacheManagerInstance) {
         }
     });
     
-    // API路由
-    app.use('/api*', async (req, res) => {
+    // =================== 2. API路由处理 ===================
+    
+    // 初始化API服务（延迟初始化）
+    let apiService = null;
+    async function getApiService() {
+        if (!apiService) {
+            try {
+                const apiModule = require('./api');
+                apiService = await apiModule.start(config, cacheManager);
+                log('API service initialized', 'DEBUG', 'WEB');
+            } catch (error) {
+                log(`Failed to initialize API service: ${error.message}`, 'ERROR', 'WEB');
+                throw error;
+            }
+        }
+        return apiService;
+    }
+
+    // API路由处理函数
+    async function handleApiRoute(req, res) {
         try {
-            const apiService = require('./api');
-            const service = await apiService.start(config, cacheManager);
+            const service = await getApiService();
             await service.handleApiRequest(req, res);
         } catch (error) {
-            log(`API service error: ${error.message}`, 'ERROR', 'WEB', req);
+            log(`API service error on ${req.path}: ${error.message}`, 'ERROR', 'WEB', req);
+            log(`Error stack: ${error.stack}`, 'DEBUG', 'WEB');
             res.status(500).json({
                 error: 'API service error',
                 message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong',
                 timestamp: require('./utils').getCurrentTimestamp()
             });
         }
-    });
+    }
+
+    // 注册API路由 - 替换原来的 app.use('/api*', ...) 部分
+    app.get('/api', handleApiRoute);
+    app.get('/api/*', handleApiRoute);
+    app.post('/api', handleApiRoute);
+    app.post('/api/*', handleApiRoute);
+    
+    // =================== 3. 健康检查路由 ===================
     
     // 健康检查
     app.get('/health', async (req, res) => {
@@ -377,7 +405,9 @@ async function start(appConfig, cacheManagerInstance) {
         }
     });
     
-    // 404处理
+    // =================== 4. 404和错误处理 ===================
+    
+    // 404处理（必须放在最后）
     app.use('*', (req, res) => {
         log('404 Not Found', 'WARN', 'WEB', req);
         res.status(404).json({ 
@@ -388,7 +418,7 @@ async function start(appConfig, cacheManagerInstance) {
         });
     });
     
-    // 错误处理
+    // 错误处理（必须放在最后）
     app.use((error, req, res, next) => {
         log(`Server error: ${error.message}`, 'ERROR', 'WEB', req);
         res.status(500).json({
@@ -398,6 +428,8 @@ async function start(appConfig, cacheManagerInstance) {
         });
     });
 
+    // =================== 5. 启动服务器部分 ===================
+    
     // 启动HTTP服务器
     const httpPort = config.server.http_port || 3000;
     httpServer = app.listen(httpPort, () => {

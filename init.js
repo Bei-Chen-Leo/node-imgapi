@@ -5,7 +5,7 @@ async function initializeFiles() {
     console.log('Initializing application files...');
     
     // 确保目录存在
-    await fs.ensureDir('./images');
+    await fs.ensureDir('./ima');
     await fs.ensureDir('./public');
     
     // 初始化空的JSON文件
