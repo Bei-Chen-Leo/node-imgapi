@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1 minimum-scale=1">
+    <title>FurAPI img文档</title>
+    <link href="./desktop.css" media="screen and (min-width: 650px)" rel="stylesheet" />
+    <link href="./mobile.css" media="screen and (max-width: 649px)" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+
+    <style>
+        @font-face {
+            font-family: ubuntu-mono;
+            src: url(./font/UbuntuMono-Regular.ttf) format("truetype");
+        }
+
+        pre,
+        code {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            word-break: break-all;
+        }
+    </style>
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            document.querySelectorAll("pre").forEach(pre => {
+                const container = document.createElement("div");
+                container.className = "code-container";
+
+                const btn = document.createElement("button");
+                btn.innerHTML = '<i class="fa-regular fa-copy"></i>';
+                btn.className = "copy-btn";
+                btn.addEventListener("click", () => {
+                    const code = pre.querySelector("code");
+                    if (code) {
+                        navigator.clipboard.writeText(code.innerText).then(() => {
+                            btn.innerHTML = '<i class="fa-solid fa-check"></i>';
+                            setTimeout(() => {
+                                btn.innerHTML = '<i class="fa-regular fa-copy"></i>';
+                            }, 1500);
+                        });
+                    }
+                });
+
+                // 包装 pre
+                pre.parentNode.insertBefore(container, pre);
+                container.appendChild(pre);
+                container.appendChild(btn);
+            });
+        });
+    </script>
+</head>
+
+<body>
+    <header>
+        <div class="logo">
+            <img alt="" src="https://www.furcraft.top/icon.png" />
+            <a href="./index.html">FurAPI</a>
+        </div>
+        <nav>
+            <ul>
+                <li><a href="./index.html">FurCraft官网</a></li>
+                <li><a href="./docs.html">友情链接</a></li>
+                <li><a href="./about.html">关于</a></li>
+                <li><a href="./contact.html">我不到</a></li>
+            </ul>
+        </nav>
+    </header>
+    <div class="main">
+        <section>
+            <h1>FurAPI 图片接口文档</h1>
+            <hr>
+            <h2>接口概述</h2>
+            <p>FurAPI 提供了灵活的图片访问接口，支持随机获取图片、分类获取以及指定图片访问。所有接口均支持返回JSON格式数据。</p>
+            <p>示例</p>
+            <div id="randomImageContainer">
+                <img alt="随机图片" id="randomImageDisplay" src=""
+                    style="max-width: 500px; display: block; margin-bottom: 10px;" />
+                <button onclick="showRandomImage()">获取随机图片</button>
+            </div>
+            <script>
+                function showRandomImage() {
+                    fetch('http://img.furapi.top/api?json=1')
+                        .then(response => response.json())
+                        .then(data => {
+                            document.getElementById('randomImageDisplay').src = 'http://img.furapi.top' + data.path;
+                        })
+                        .catch(err => {
+                            console.error('获取图片失败:', err);
+                            alert('图片加载失败，请稍后重试');
+                        });
+                }
+            </script>
+
+        </section>
+        <section>
+            <h2>接口列表</h2>
+            <p>api基础地址</p>
+            <p><code>https://img.furapi.top</code></p>
+            <h3>1.1 随机获取所有图片</h3>
+            <p><strong>接口地址：</strong> <code>/api</code></p>
+            <p><strong>请求方式：</strong> GET</p>
+            <p><strong>描述：</strong> 从所有图片中随机返回一张图片</p>
+            <p><strong>示例：</strong></p>
+            <ul>
+                <li>直接访问图片：<code>https://img.furapi.top/api</code></li>
+                <li>获取JSON格式：<code>https://img.furapi.top/api?json=1</code></li>
+            </ul>
+            <p><strong>JSON响应示例：</strong></p>
+            <pre><code>{
+    "name": "example.jpg",
+    "size": 224251,
+    "uploadtime": "2025-06-01 02:34:51",
+    "path": "/api/example.jpg",
+    "processingTime": 2
+}</code></pre>
+            <h3>1.2 随机获取指定目录图片</h3>
+            <p><strong>接口地址：</strong> <code>/api/{目录名}</code></p>
+            <p><strong>请求方式：</strong> GET</p>
+            <p><strong>描述：</strong> 从指定目录中随机返回一张图片</p>
+            <p><strong>示例：</strong></p>
+            <ul>
+                <li>直接访问图片：<code>https://img.furapi.top/api/furry</code></li>
+                <li>获取JSON格式：<code>https://img.furapi.top/api/furry?json=1</code></li>
+            </ul>
+            <p><strong>JSON响应示例：</strong></p>
+            <pre><code>{
+    "name": "random_image.jpg",
+    "size": 356789,
+    "uploadtime": "2025-05-28 14:22:10",
+    "path": "/api/furry/random_image.jpg",
+    "processingTime": 3
+}</code></pre>
+            <h3>1.3 获取指定图片</h3>
+            <p><strong>接口地址：</strong> <code>/api/{目录名}/{图片名}</code></p>
+            <p><strong>请求方式：</strong> GET</p>
+            <p><strong>描述：</strong> 直接访问指定目录下的指定图片</p>
+            <p><strong>示例：</strong></p>
+            <ul>
+                <li>直接访问图片：<code>https://img.furapi.top/api/furry/fox.jpg</code></li>
+                <li>获取JSON格式：<code>https://img.furapi.top/api/furry/fox.jpg?json=1</code></li>
+            </ul>
+            <p><strong>JSON响应示例：</strong></p>
+            <pre><code>{
+    "name": "fox.jpg",
+    "size": 182456,
+    "uploadtime": "2025-05-15 09:15:33",
+    "path": "/api/furry/fox.jpg",
+    "processingTime": 1
+}</code></pre>
+            <h3>1.4 获取文件列表</h3>
+            <p><strong>接口地址：</strong> <code>/list.json</code></p>
+            <p><strong>请求方式：</strong> GET</p>
+            <p><strong>描述：</strong> 获取所有可用的图片目录和文件列表</p>
+            <p><strong>示例：</strong></p>
+            <ul>
+                <li>访问地址：<code>https://img.furapi.top/list.json</code></li>
+            </ul>
+            <p><strong>JSON响应示例：</strong></p>
+            <pre><code>
+    "code": 200,
+    "categories": [
+    {
+        "_root": {
+          "810F68CEF6527EA78A4A201CA8293919.png": "2025-05-28 22:39:12",
+          "B7D09439CD390C6C9E0764057C3A901E.jpg": "2025-06-19 18:52:37",
+          "E8186C0A390401605329B26551D3EDC1.jpg": "2025-06-19 22:22:06",
+          "QQ20250524-010001.png": "2025-05-24 01:00:08",
+          "QQ20250524-010025.png": "2025-05-24 01:00:27",
+          "QQ20250601-023253.png": "2025-06-01 02:32:57",
+          "QQ20250601-023446.png": "2025-06-01 02:34:51",
+          "QQ20250601-023929.png": "2025-06-01 02:39:33",
+          "QQ20250601-041824.png": "2025-06-01 04:18:27",
+          "QQ20250602-005904.png": "2025-06-02 00:59:07",
+          "QQ20250602-015211.png": "2025-06-02 01:52:13",
+          "QQ20250602-020642.png": "2025-06-02 02:06:44"
+        }
+    ],
+    "total_images": 350
+}</code></pre>
+        </section>
+        <section>
+            <h2>使用示例</h2>
+            <pre><code>&lt;!-- 随机显示一张图片 --&gt;
+&lt;img src="https://img.furapi.top/api" alt="随机图片"&gt;
+
+&lt;!-- 显示furry目录的随机图片 --&gt;
+&lt;img src="https://img.furapi.top/api/furry" alt="Furry图片"&gt;
+
+&lt;!-- 显示指定图片 --&gt;
+&lt;img src="https://img.furapi.top/api/furry/fox.jpg" alt="狐狸图片"&gt;</code></pre>
+            <pre><code>&lt;!-- HTML部分 --&gt;
+&lt;div id="imageContainer"&gt;
+    &lt;img id="randomImage" src="" alt="点击按钮获取图片" style="max-width: 500px;"&gt;
+    &lt;div id="imageInfo"&gt;&lt;/div&gt;
+&lt;/div&gt;
+&lt;button onclick="getRandomImage()"&gt;获取随机图片&lt;/button&gt;
+&lt;button onclick="getFurryImage()"&gt;获取Furry图片&lt;/button&gt;
+&lt;button onclick="getImageInfo()"&gt;获取图片信息(JSON)&lt;/button&gt;
+
+&lt;script&gt;
+// 获取随机图片
+function getRandomImage() {
+    const img = document.getElementById('randomImage');
+    // 添加时间戳避免缓存
+    img.src = 'https://img.furapi.top/api?' + new Date().getTime();
+}
+
+// 获取指定目录图片
+function getFurryImage() {
+    const img = document.getElementById('randomImage');
+    img.src = 'https://img.furapi.top/api/furry?' + new Date().getTime();
+}
+
+// 获取图片JSON信息
+function getImageInfo() {
+    fetch('https://img.furapi.top/api?json=1')
+        .then(response =&gt; response.json())
+        .then(data =&gt; {
+            // 显示图片
+            document.getElementById('randomImage').src = 'https://img.furapi.top' + data.path;
+            
+            // 显示图片信息
+            const info = `
+                &lt;p&gt;文件名: ${data.name}&lt;/p&gt;
+                &lt;p&gt;文件大小: ${(data.size / 1024).toFixed(2)} KB&lt;/p&gt;
+                &lt;p&gt;上传时间: ${data.uploadtime}&lt;/p&gt;
+                &lt;p&gt;路径: ${data.path}&lt;/p&gt;
+                &lt;p&gt;处理时间: ${data.processingTime}ms&lt;/p&gt;
+            `;
+            document.getElementById('imageInfo').innerHTML = info;
+        })
+        .catch(error =&gt; {
+            console.error('获取失败:', error);
+            alert('获取图片信息失败');
+        });
+}
+&lt;/script&gt;</code></pre>
+            <pre><code>&lt;template&gt;
+  &lt;div&gt;
+    &lt;img :src="imageUrl" v-if="imageUrl" style="max-width: 500px;"&gt;
+    &lt;div v-if="imageData"&gt;
+      &lt;p&gt;文件名: {{ imageData.name }}&lt;/p&gt;
+      &lt;p&gt;大小: {{ (imageData.size / 1024).toFixed(2) }} KB&lt;/p&gt;
+      &lt;p&gt;上传时间: {{ imageData.uploadtime }}&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;button @click="getRandomImage"&gt;获取随机图片&lt;/button&gt;
+    &lt;button @click="getImageWithInfo"&gt;获取图片及信息&lt;/button&gt;
+  &lt;/div&gt;
+&lt;/template&gt;
+
+&lt;script&gt;
+export default {
+  data() {
+    return {
+      imageUrl: '',
+      imageData: null
+    }
+  },
+  methods: {
+    getRandomImage() {
+      this.imageUrl = `https://img.furapi.top/api?t=${Date.now()}`;
+      this.imageData = null;
+    },
+    async getImageWithInfo() {
+      try {
+        const response = await fetch('https://img.furapi.top/api?json=1');
+        const data = await response.json();
+        this.imageData = data;
+        this.imageUrl = `https://img.furapi.top${data.path}`;
+      } catch (error) {
+        console.error('获取失败:', error);
+      }
+    }
+  }
+}
+&lt;/script&gt;</code></pre>
+            <pre><code>import React, { useState } from 'react';
+
+function ImageGallery() {
+  const [imageUrl, setImageUrl] = useState('');
+  const [imageInfo, setImageInfo] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const getRandomImage = () =&gt; {
+    setImageUrl(`https://img.furapi.top/api?t=${Date.now()}`);
+    setImageInfo(null);
+  };
+
+  const getImageWithInfo = async () =&gt; {
+    setLoading(true);
+    try {
+      const response = await fetch('https://img.furapi.top/api?json=1');
+      const data = await response.json();
+      setImageInfo(data);
+      setImageUrl(`https://img.furapi.top${data.path}`);
+    } catch (error) {
+      console.error('获取失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    &lt;div&gt;
+      {imageUrl &amp;&amp; &lt;img src={imageUrl} alt="Random" style={{maxWidth: '500px'}} /&gt;}
+      
+      {imageInfo &amp;&amp; (
+        &lt;div&gt;
+          &lt;p&gt;文件名: {imageInfo.name}&lt;/p&gt;
+          &lt;p&gt;大小: {(imageInfo.size / 1024).toFixed(2)} KB&lt;/p&gt;
+          &lt;p&gt;上传时间: {imageInfo.uploadtime}&lt;/p&gt;
+          &lt;p&gt;处理时间: {imageInfo.processingTime}ms&lt;/p&gt;
+        &lt;/div&gt;
+      )}
+      
+      &lt;button onClick={getRandomImage}&gt;获取随机图片&lt;/button&gt;
+      &lt;button onClick={getImageWithInfo} disabled={loading}&gt;
+        {loading ? '加载中...' : '获取图片及信息'}
+      &lt;/button&gt;
+    &lt;/div&gt;
+  );
+}
+
+export default ImageGallery;</code></pre>
+            <h3>JavaScript中使用</h3>
+            <pre><code>// 获取随机图片的JSON数据
+fetch('https://img.furapi.top/api?json=1')
+    .then(response =&gt; response.json())
+    .then(data =&gt; {
+        console.log('图片名称:', data.name);
+        console.log('文件大小:', data.size);
+        console.log('上传时间:', data.uploadtime);
+        console.log('图片路径:', data.path);
+        console.log('处理时间:', data.processingTime + 'ms');
+        
+        // 使用返回的路径显示图片
+        document.getElementById('myImage').src = 'https://img.furapi.top' + data.path;
+    });
+
+// 异步函数示例
+async function fetchRandomImage() {
+    try {
+        const response = await fetch('https://img.furapi.top/api/furry?json=1');
+        const data = await response.json();
+        
+        // 创建图片元素
+        const img = new Image();
+        img.src = 'https://img.furapi.top' + data.path;
+        img.onload = () =&gt; {
+            console.log(`图片 ${data.name} 加载成功`);
+            console.log(`图片大小: ${(data.size / 1024).toFixed(2)} KB`);
+        };
+        
+        return data;
+    } catch (error) {
+        console.error('获取图片失败:', error);
+    }
+}
+
+// 获取文件列表
+fetch('https://img.furapi.top/list.json')
+    .then(response =&gt; response.json())
+    .then(data =&gt; {
+        console.log('可用目录:', data.categories);
+    });</code></pre>
+            <pre><code>import requests
+import json
+
+# 获取随机图片信息
+response = requests.get('https://img.furapi.top/api?json=1')
+data = response.json()
+print(f"图片名称: {data['name']}")
+print(f"文件大小: {data['size'] / 1024:.2f} KB")
+print(f"上传时间: {data['uploadtime']}")
+print(f"图片路径: {data['path']}")
+print(f"处理时间: {data['processingTime']}ms")
+
+# 下载图片
+image_url = f"https://img.furapi.top{data['path']}"
+img_response = requests.get(image_url)
+if img_response.status_code == 200:
+    with open(data['name'], 'wb') as f:
+        f.write(img_response.content)
+    print(f"图片已保存为: {data['name']}")
+
+# 获取指定目录的随机图片
+response = requests.get('https://img.furapi.top/api/furry?json=1')
+data = response.json()
+print(f"Furry图片: {data['name']}")
+
+# 批量获取图片
+import time
+
+def get_multiple_images(count=5, category=''):
+    images = []
+    for i in range(count):
+        url = f'https://img.furapi.top/api/{category}?json=1' if category else 'https://img.furapi.top/api?json=1'
+        response = requests.get(url)
+        if response.status_code == 200:
+            images.append(response.json())
+        time.sleep(0.5)  # 避免请求过快
+    return images
+
+# 获取5张随机图片信息
+random_images = get_multiple_images(5)
+for img in random_images:
+    print(f"- {img['name']} ({img['size'] / 1024:.2f} KB)")</code></pre>
+            <pre><code>&lt;!-- HTML --&gt;
+&lt;div id="gallery"&gt;
+    &lt;img id="displayImage" src="" style="max-width: 500px; display: none;"&gt;
+    &lt;div id="loading" style="display: none;"&gt;加载中...&lt;/div&gt;
+    &lt;div id="imageDetails"&gt;&lt;/div&gt;
+&lt;/div&gt;
+&lt;button id="btnRandom"&gt;随机图片&lt;/button&gt;
+&lt;button id="btnFurry"&gt;Furry图片&lt;/button&gt;
+&lt;button id="btnWithInfo"&gt;获取详细信息&lt;/button&gt;
+
+&lt;script src="https://code.jquery.com/jquery-3.6.0.min.js"&gt;&lt;/script&gt;
+&lt;script&gt;
+$(document).ready(function() {
+    // 随机图片按钮
+    $('#btnRandom').click(function() {
+        $('#displayImage')
+            .attr('src', 'https://img.furapi.top/api?' + Date.now())
+            .show();
+        $('#imageDetails').empty();
+    });
+    
+    // Furry图片按钮
+    $('#btnFurry').click(function() {
+        $('#displayImage')
+            .attr('src', 'https://img.furapi.top/api/furry?' + Date.now())
+            .show();
+        $('#imageDetails').empty();
+    });
+    
+    // 获取详细信息按钮
+    $('#btnWithInfo').click(function() {
+        $('#loading').show();
+        
+        $.ajax({
+            url: 'https://img.furapi.top/api?json=1',
+            method: 'GET',
+            success: function(data) {
+                $('#displayImage')
+                    .attr('src', 'https://img.furapi.top' + data.path)
+                    .show();
+                
+                const details = `
+                    &lt;h4&gt;图片信息：&lt;/h4&gt;
+                    &lt;ul&gt;
+                        &lt;li&gt;文件名：${data.name}&lt;/li&gt;
+                        &lt;li&gt;大小：${(data.size / 1024).toFixed(2)} KB&lt;/li&gt;
+                        &lt;li&gt;上传时间：${data.uploadtime}&lt;/li&gt;
+                        &lt;li&gt;路径：${data.path}&lt;/li&gt;
+                        &lt;li&gt;加载耗时：${data.processingTime}ms&lt;/li&gt;
+                    &lt;/ul&gt;
+                `;
+                $('#imageDetails').html(details);
+            },
+            error: function(xhr, status, error) {
+                alert('获取失败: ' + error);
+            },
+            complete: function() {
+                $('#loading').hide();
+            }
+        });
+    });
+});
+&lt;/script&gt;</code></pre>
+        </section>
+        <section>
+            <h2>注意事项</h2>
+            <ul>
+                <li>所有接口均支持HTTPS协议</li>
+                <li>图片格式支持：jpg, jpeg, png, gif, webp</li>
+                <li>建议在生产环境中添加错误处理机制</li>
+                <li>请合理使用API，避免频繁请求造成服务器压力</li>
+                <li>如需大量使用，请联系管理员获取更高的请求配额</li>
+            </ul>
+        </section>
+        <section>
+            <h2>错误码说明</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>错误码</th>
+                        <th>说明</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>200</td>
+                        <td>请求成功</td>
+                    </tr>
+                    <tr>
+                        <td>404</td>
+                        <td>图片或目录不存在</td>
+                    </tr>
+                    <tr>
+                        <td>500</td>
+                        <td>服务器内部错误</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+    </div>
+    <footer>
+        <div class="footer-content">
+            <p>如发现 IP 地址有变动，请通过邮件通知我们：<a href="mailto:admin@furcraft.top">联系我们</a></p>
+            <p>Copyright © 2023 – 2025 <a href="https://www.furcraft.top/">FurCraft</a>. 保留所有权利</p>
+        </div>
+    </footer>
+</body>
+
+</html>

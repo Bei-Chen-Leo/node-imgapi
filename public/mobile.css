@@ -1,0 +1,166 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #1b1e1f;
+    width: 100%;
+}
+
+header {
+    background: linear-gradient(135deg, #764ba2, #3498db);
+    color: white;
+    padding: 10px 20px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+.logo {
+    padding-top: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.logo img {
+    display: none;
+}
+
+.logo a {
+    color: #f4f4f4;
+    text-decoration: none;
+    font-size: 2rem;
+}
+
+nav ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding-top: 0.8rem;
+    white-space: nowrap;
+    flex-wrap: nowrap;
+    overflow-x: scroll;
+    overflow-y: hidden;
+}
+ul li{
+    flex: 0 0 auto;
+}
+
+li a {
+    color: #f4f4f4;
+    text-decoration: none;
+    padding: 10px 15px;
+    font-size: 1rem;
+    transition: all 0.3s;
+}
+
+li a:hover {
+    background-color: rgba(0, 0, 0, 0.2);
+    border-radius: 5px;
+    color: #764ba2;
+}
+
+.main {
+    display: flex;
+    margin: 1rem 1.5rem;
+    flex-direction: column;
+    color: #f4f4f4;
+}
+
+section {
+    border-radius: 15px;
+    padding: 1em 2em;
+    background-color: rgb(37 36 36 / 26%);
+    box-shadow: 4px 4px 9px 3px rgba(0, 0, 0, 0.2);
+    margin: 1em 0;
+}
+
+h1 {
+    margin: 1em 0 0 0;
+    color: rgb(103, 160, 234);
+    font-size: 2em;
+}
+
+h2 {
+    margin: 1em 0 0.5em 0;
+    color: rgb(103, 160, 234);
+}
+
+h3 {
+    color: #B1D9FB;
+}
+
+button {
+    margin: 0;
+    padding: 0.8em 1.2em;
+    border: none;
+    background: linear-gradient(135deg, #764ba2, #3498db);
+    border-radius: 8px;
+    font-size: 0.9em;
+}
+
+hr {
+    border: 1px solid rgb(19, 40, 136);
+}
+
+pre {
+    border-radius: 10px;
+    background-color: rgba(0, 0, 0, 0.5);
+    padding: 1em 2em;
+}
+
+code {
+    font-family: ubuntu-mono, monospace;
+}
+
+.copy-btn {
+    position: absolute;
+    top: 1em;
+    right: 1em;
+    padding: 0.6em 0.8em;
+    font-size: 14px;
+    cursor: pointer;
+    border: 1px solid rgba(71, 71, 71, 0.5);
+    background: rgba(0, 0, 0, 0.6);
+    color: white;
+    border-radius: 4px;
+}
+
+.copy-btn i {
+    pointer-events: none;
+}
+
+.code-container {
+    position: relative;
+}
+
+footer {
+    color: #f4f4f4;
+    background-color: #202324;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.3rem 0;
+}
+
+footer p {
+    margin: 0;
+    padding: 0;
+    font-size: 0.96rem;
+    text-align: center;
+}
+
+footer a {
+    color: #3498db;
+    text-decoration: none;
+    transition: all 0.3s;
+}
+
+footer a:hover {
+    color: #764ba2;
+    text-decoration: underline;
+}
